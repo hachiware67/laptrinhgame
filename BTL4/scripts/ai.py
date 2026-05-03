@@ -2,7 +2,7 @@ import random
 from dataclasses import dataclass
 from typing import Optional
 
-from scripts.cards import Card
+from scripts.cards import ACTION_COUNTER, Card
 from scripts.game_manager import (
     ActionResult,
     PASS_CLOCKWISE,
@@ -44,6 +44,12 @@ def get_best_card_index(game: UnoGameManager, player_id: int) -> int:
     # Get the top discard card to match against
     top_card = game.top_discard
     best_idx = legal_indices[0]
+
+    # Priority 0: Always deflect an incoming draw penalty with Counter
+    if game.pending_draw_penalty_count > 0:
+        counter_matches = [idx for idx in legal_indices if hand[idx].kind == ACTION_COUNTER]
+        if counter_matches:
+            return counter_matches[0]
 
     # Priority 1: Lowest number card matching current color
     color_matches = [idx for idx in legal_indices if hand[idx].color == top_card.color and hand[idx].kind == "number"]

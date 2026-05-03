@@ -4,13 +4,23 @@ from typing import Dict, Optional, Tuple
 import pygame
 
 from scripts.cards import (
+    ACTION_COUNTER,
+    ACTION_DRAW_67,
     ACTION_DRAW_TWO,
     ACTION_REVERSE,
+    ACTION_SILENCE,
     ACTION_SKIP,
     ACTION_WILD,
     ACTION_WILD_DRAW_FOUR,
     Card,
 )
+
+MIXI_CARD_KINDS: frozenset = frozenset({ACTION_COUNTER, ACTION_SILENCE, ACTION_DRAW_67})
+MIXI_IMAGE_FILES: Dict[str, str] = {
+    ACTION_COUNTER: "counter.png",
+    ACTION_SILENCE: "silence.jpg",
+    ACTION_DRAW_67: "draw67.jpg",
+}
 
 
 class CardSpriteAtlas:
@@ -33,6 +43,14 @@ class CardSpriteAtlas:
             raise pygame.error(f"Could not load required UNO card atlas: {sprite_sheet_path}") from exc
         self.card_map = self._build_card_map()
         self.cache: Dict[Tuple[str, int, int], pygame.Surface] = {}
+        self._mixi_surfaces: Dict[str, pygame.Surface] = {}
+        for kind, filename in MIXI_IMAGE_FILES.items():
+            path = sprite_sheet_path.parent / filename
+            if path.exists():
+                try:
+                    self._mixi_surfaces[kind] = pygame.image.load(str(path)).convert_alpha()
+                except pygame.error:
+                    pass
 
     def _src_rect(self, row: int, col: int) -> pygame.Rect:
         return pygame.Rect(
@@ -187,7 +205,28 @@ class CardSpriteAtlas:
         self.cache[key] = rounded
         return rounded
 
+    def _get_mixi_card_surface(self, card: Card, width: int, height: int) -> pygame.Surface:
+        chosen_color = card.chosen_color if card.is_wild else None
+        cache_key = (f"mixi:{card.kind}:{chosen_color}", width, height)
+        if cache_key in self.cache:
+            return self.cache[cache_key]
+
+        source = self._mixi_surfaces.get(card.kind)
+        if source is None:
+            src = self._src_rect(0, 0)
+            source = self.sheet.subsurface(src).copy()
+
+        scaled = pygame.transform.smoothscale(source, (width, height))
+        rounded = self._apply_rounded_corners(scaled)
+        if card.is_wild and chosen_color:
+            rounded = self._apply_wild_color_choice(rounded, chosen_color)
+        self.cache[cache_key] = rounded
+        return rounded
+
     def get_card_surface(self, card: Card, width: int, height: int) -> pygame.Surface:
+        if card.kind in MIXI_CARD_KINDS:
+            return self._get_mixi_card_surface(card, width, height)
+
         map_key = self._card_key(card)
         chosen_color = card.chosen_color if card.is_wild else None
         cache_key = (f"{map_key}:{chosen_color}", width, height)

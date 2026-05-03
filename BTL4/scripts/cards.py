@@ -15,6 +15,9 @@ ACTION_REVERSE = "reverse"
 ACTION_DRAW_TWO = "draw2"
 ACTION_WILD = "wild"
 ACTION_WILD_DRAW_FOUR = "wild_draw4"
+ACTION_COUNTER = "counter"
+ACTION_SILENCE = "silence"
+ACTION_DRAW_67 = "draw67"
 
 ACTION_ORDER = {
     ACTION_SKIP: 0,
@@ -38,7 +41,7 @@ class Card:
 
     @property
     def is_wild(self) -> bool:
-        return self.kind in (ACTION_WILD, ACTION_WILD_DRAW_FOUR)
+        return self.kind in (ACTION_WILD, ACTION_WILD_DRAW_FOUR, ACTION_SILENCE, ACTION_DRAW_67)
 
     @property
     def short_label(self) -> str:
@@ -52,6 +55,12 @@ class Card:
             return "+2"
         if self.kind == ACTION_WILD:
             return "WILD"
+        if self.kind == ACTION_COUNTER:
+            return "DWP"
+        if self.kind == ACTION_SILENCE:
+            return "SIL"
+        if self.kind == ACTION_DRAW_67:
+            return "+67"
         return "+4"
 
 

@@ -870,6 +870,8 @@ def render_ui(
     draw_decision_card: Card | None = None,
     player_names: dict[int, str] | None = None,
     local_player_id: int = 0,
+    compact_back_rect: pygame.Rect | None = None,
+    compact_hidden_count: int = 0,
 ) -> None:
     width, height = screen.get_size()
     _draw_table_background(screen)
@@ -917,10 +919,11 @@ def render_ui(
     screen.blit(top_img, top_img.get_rect(center=discard_rect.center))
 
     header_margin = max(24, int(width * 0.025))
+    left_panel_width = _clamp(int(width * 0.24), 280, 380)  # Reduced from 0.28 to make room for compact badge
     left_panel = pygame.Rect(
         header_margin,
         height - footer_height - 148,
-        _clamp(int(width * 0.28), 320, 460),
+        left_panel_width,
         108,
     )
     right_panel = pygame.Rect(
@@ -1035,6 +1038,23 @@ def render_ui(
         if i == selected_index:
             pygame.draw.rect(screen, (4, 8, 12), card_rect.inflate(8, 8), width=4, border_radius=12)
             pygame.draw.rect(screen, UNO_YELLOW, card_rect.inflate(6, 6), width=2, border_radius=11)
+
+    if compact_back_rect is not None and compact_hidden_count > 0:
+        badge_x = header_margin + left_panel_width + 12
+        badge_y = height - footer_height - 126
+        badge_font = _scaled_font(width, height, 20, bold=True)
+        badge_text = badge_font.render(f"+{compact_hidden_count}", True, (255, 255, 255))
+        badge_bg = badge_text.get_rect(topleft=(badge_x, badge_y))
+        pygame.draw.rect(screen, (200, 55, 55), badge_bg.inflate(12, 8), border_radius=8)
+        pygame.draw.rect(screen, (240, 100, 100), badge_bg.inflate(12, 8), width=2, border_radius=8)
+        screen.blit(badge_text, badge_bg)
+        cw, ch = PLAYER_CARD_SIZE
+        back_img = atlas.get_back_surface(cw, ch)
+        compact_card_x = badge_bg.right + 12
+        compact_card_y = badge_y - 12
+        compact_rect = pygame.Rect(compact_card_x, compact_card_y, cw, ch)
+        _blit_card_shadow(screen, compact_rect.center, PLAYER_CARD_SIZE, alpha=80, y_offset=8)
+        screen.blit(back_img, compact_rect)
 
     sort_rect = get_sort_hand_button_rect(screen_rect)
     sort_enabled = game.current_player == 0 and game.pending_effect is None and not wild_color_picker_active and draw_decision_card is None

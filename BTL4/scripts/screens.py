@@ -9,7 +9,7 @@ import pygame
 from scripts.animation import ActiveCard, lerp, lerp_point, smooth_factor, transform_card_surface
 from scripts.assets import asset_path
 from scripts.ai import AITurnOutcome, perform_simple_ai_turn
-from scripts.cards import ACTION_WILD_DRAW_FOUR, Card
+from scripts.cards import ACTION_WILD_DRAW_FOUR, ACTION_COUNTER, ACTION_DRAW_67, ACTION_SILENCE, Card, sort_hand_cards
 from scripts.game_manager import (
     ActionResult,
     GameSettings,
@@ -924,10 +924,11 @@ class GameSettingsScreen(BaseScreen):
         atlas: CardSpriteAtlas,
         audio_settings: AudioSettings,
         multiplayer_host_setup: Optional[MultiplayerHostSetup] = None,
+        settings: Optional[GameSettings] = None,
     ) -> None:
         self.atlas = atlas
         self.audio_settings = audio_settings
-        self.settings = GameSettings()
+        self.settings = settings if settings is not None else GameSettings()
         self.multiplayer_host_setup = multiplayer_host_setup
         if self.multiplayer_host_setup is not None:
             self.settings.num_players = self.multiplayer_host_setup.capacity
@@ -1000,8 +1001,9 @@ class GameSettingsScreen(BaseScreen):
         button_height = 60
         spacing = 30
         preferred_y = int(screen_rect.height * (0.79 if show_rule_8_timer else 0.66))
-        bottom_button_top = min(rect.top for rect in GameSettingsScreen._get_bottom_button_rects(screen_rect).values())
-        start_y = min(preferred_y, bottom_button_top - button_height - 8)
+        bottom_rects = GameSettingsScreen._get_bottom_button_rects(screen_rect)
+        bottom_top = min(r.top for r in bottom_rects.values())
+        start_y = min(preferred_y, bottom_top - button_height - 12)
         block_x = screen_rect.centerx - (button_width * 2 + spacing) // 2
         return {
             "skip": pygame.Rect(block_x, start_y, button_width, button_height),
@@ -1081,42 +1083,12 @@ class GameSettingsScreen(BaseScreen):
                         return ScreenResult(next_screen=lobby_screen)
                     return ScreenResult(next_screen=TitleScreen(self.atlas, self.audio_settings))
                 
-                # Start game button
+                # Next button — proceed to extension pack selection
                 start_rect = self._get_bottom_button_rects(screen.get_rect())["start_game"]
                 if start_rect.collidepoint(mouse_pos):
-                    if self.multiplayer_host_setup is not None:
-                        try:
-                            host = MultiplayerHost(
-                                host_name=self.multiplayer_host_setup.player_name,
-                                room_name=self.multiplayer_host_setup.room_name,
-                                password=self.multiplayer_host_setup.password,
-                                capacity=self.settings.num_players,
-                            )
-                        except OSError as exc:
-                            self.message = f"Could not host room: {exc}"
-                            return ScreenResult()
-                        except ValueError as exc:
-                            self.message = str(exc)
-                            return ScreenResult()
-
-                        multiplayer_screen = MultiplayerScreen(self.atlas, self.audio_settings)
-                        multiplayer_screen.mode = MultiplayerScreen.MODE_ROOM
-                        multiplayer_screen.is_host = True
-                        multiplayer_screen.host = host
-                        multiplayer_screen.room_state = host.room_state
-                        multiplayer_screen.message = f"Room created. Share code: {host.room_id}"
-                        return ScreenResult(next_screen=multiplayer_screen)
-
-                    game = UnoGameManager(settings=self.settings)
-                    return ScreenResult(
-                        next_screen=PlayingScreen(
-                            atlas=self.atlas,
-                            game=game,
-                            audio_settings=self.audio_settings,
-                            last_message="Player 1 starts.",
-                            next_ai_time=now_ms + PlayingScreen.AI_TURN_DELAY_MS,
-                        )
-                    )
+                    return ScreenResult(next_screen=ExtensionPackScreen(
+                        self.atlas, self.audio_settings, self.settings, self.multiplayer_host_setup
+                    ))
 
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 self.dragging_initial_cards = False
@@ -1206,7 +1178,171 @@ class GameSettingsScreen(BaseScreen):
 
         button_rects = self._get_bottom_button_rects(screen_rect)
         self._draw_button(screen, button_rects["back"], "BACK", SETTINGS_DANGER_FILL, SETTINGS_DANGER_BORDER)
-        self._draw_button(screen, button_rects["start_game"], "START GAME", SETTINGS_ACTIVE_FILL, SETTINGS_ACTIVE_BORDER)
+        self._draw_button(screen, button_rects["start_game"], "NEXT", SETTINGS_ACTIVE_FILL, SETTINGS_ACTIVE_BORDER)
+        if self.message:
+            footer = font_label.render(self.message, True, (234, 213, 145))
+            footer_y = button_rects["back"].top - 18
+            screen.blit(footer, footer.get_rect(midbottom=(screen_rect.centerx, footer_y)))
+
+
+class ExtensionPackScreen(BaseScreen):
+    """Screen for selecting extension packs, shown between GameSettingsScreen and game start."""
+    state_name = "extension_packs"
+
+    def __init__(
+        self,
+        atlas: CardSpriteAtlas,
+        audio_settings: AudioSettings,
+        settings: GameSettings,
+        multiplayer_host_setup: Optional[MultiplayerHostSetup] = None,
+    ) -> None:
+        self.atlas = atlas
+        self.audio_settings = audio_settings
+        self.settings = settings
+        self.multiplayer_host_setup = multiplayer_host_setup
+        self.message = ""
+
+    @staticmethod
+    def _get_bottom_button_rects(screen_rect: pygame.Rect) -> dict[str, pygame.Rect]:
+        button_w = 240
+        button_h = 64
+        spacing = 40
+        y = screen_rect.height - button_h - 50
+        total_width = button_w * 2 + spacing
+        left_x = screen_rect.centerx - total_width // 2
+        return {
+            "start_game": pygame.Rect(left_x, y, button_w, button_h),
+            "back": pygame.Rect(left_x + button_w + spacing, y, button_w, button_h),
+        }
+
+    @staticmethod
+    def _get_mixi_toggle_rect(screen_rect: pygame.Rect) -> pygame.Rect:
+        bottom_rects = ExtensionPackScreen._get_bottom_button_rects(screen_rect)
+        bottom_top = min(r.top for r in bottom_rects.values())
+        button_w = 280
+        button_h = 54
+        return pygame.Rect(screen_rect.centerx - button_w // 2, bottom_top - button_h - 80, button_w, button_h)
+
+    def handle_events(
+        self,
+        events: list[pygame.event.Event],
+        screen: pygame.Surface,
+        now_ms: int,
+    ) -> ScreenResult:
+        for event in events:
+            if event.type == pygame.QUIT:
+                return ScreenResult(running=False)
+
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mouse_pos = event.pos
+
+                # Calculate mixi rect the same way as in draw()
+                screen_rect = screen.get_rect()
+                panel_rect = pygame.Rect(0, 0, min(900, screen_rect.width - 96), screen_rect.height - 170)
+                panel_rect.center = (screen_rect.centerx, screen_rect.centery + 38)
+                
+                desc_y = panel_rect.top + 40
+                mixi_label_y = desc_y + 80
+                mixi_button_y = mixi_label_y + 50
+                
+                button_w = 280
+                button_h = 54
+                mixi_rect = pygame.Rect(screen_rect.centerx - button_w // 2, mixi_button_y, button_w, button_h)
+                
+                if mixi_rect.collidepoint(mouse_pos):
+                    if "mixi" in self.settings.extension_packs:
+                        self.settings.extension_packs.remove("mixi")
+                    else:
+                        self.settings.extension_packs.append("mixi")
+
+                back_rect = self._get_bottom_button_rects(screen.get_rect())["back"]
+                if back_rect.collidepoint(mouse_pos):
+                    return ScreenResult(next_screen=GameSettingsScreen(
+                        self.atlas,
+                        self.audio_settings,
+                        multiplayer_host_setup=self.multiplayer_host_setup,
+                        settings=self.settings,
+                    ))
+
+                start_rect = self._get_bottom_button_rects(screen.get_rect())["start_game"]
+                if start_rect.collidepoint(mouse_pos):
+                    if self.multiplayer_host_setup is not None:
+                        try:
+                            host = MultiplayerHost(
+                                host_name=self.multiplayer_host_setup.player_name,
+                                room_name=self.multiplayer_host_setup.room_name,
+                                password=self.multiplayer_host_setup.password,
+                                capacity=self.settings.num_players,
+                            )
+                        except OSError as exc:
+                            self.message = f"Could not host room: {exc}"
+                            return ScreenResult()
+                        except ValueError as exc:
+                            self.message = str(exc)
+                            return ScreenResult()
+
+                        multiplayer_screen = MultiplayerScreen(self.atlas, self.audio_settings)
+                        multiplayer_screen.mode = MultiplayerScreen.MODE_ROOM
+                        multiplayer_screen.is_host = True
+                        multiplayer_screen.host = host
+                        multiplayer_screen.room_state = host.room_state
+                        multiplayer_screen.message = f"Room created. Share code: {host.room_id}"
+                        return ScreenResult(next_screen=multiplayer_screen)
+
+                    game = UnoGameManager(settings=self.settings)
+                    return ScreenResult(
+                        next_screen=PlayingScreen(
+                            atlas=self.atlas,
+                            game=game,
+                            audio_settings=self.audio_settings,
+                            last_message="Player 1 starts.",
+                            next_ai_time=now_ms + PlayingScreen.AI_TURN_DELAY_MS,
+                        )
+                    )
+
+        return ScreenResult()
+
+    def draw(self, screen: pygame.Surface, now_ms: int) -> None:
+        draw_theme_background(screen)
+        screen_rect = screen.get_rect()
+        section_x = GameSettingsScreen._section_x(screen_rect)
+
+        font_title = theme_font(screen_rect.width, screen_rect.height, 72, bold=True)
+        font_section = theme_font(screen_rect.width, screen_rect.height, 34, bold=True)
+        font_label = theme_font(screen_rect.width, screen_rect.height, 28)
+
+        # Title at the very top, like other config screens
+        title = font_title.render("EXTENSION PACKS", True, (255, 255, 255))
+        title_y = max(18, int(screen_rect.height * 0.032))
+        screen.blit(title, title.get_rect(midtop=(screen_rect.centerx, title_y)))
+
+        # Panel containing the controls
+        panel_rect = pygame.Rect(0, 0, min(900, screen_rect.width - 96), screen_rect.height - 170)
+        panel_rect.center = (screen_rect.centerx, screen_rect.centery + 38)
+        draw_theme_panel(screen, panel_rect, alpha=146)
+
+        # Description label inside the panel
+        desc_label = font_section.render("Choose which expansion packs to enable:", True, (255, 255, 255))
+        desc_y = panel_rect.top + 40
+        screen.blit(desc_label, (panel_rect.left + 40, desc_y))
+
+        # Mixi Pack label and button below the description text
+        mixi_label_y = desc_y + 80
+        label = font_section.render("Mixi Pack:", True, (255, 255, 255))
+        screen.blit(label, (panel_rect.left + 40, mixi_label_y))
+
+        mixi_button_y = mixi_label_y + 50
+        button_w = 280
+        button_h = 54
+        mixi_rect = pygame.Rect(screen_rect.centerx - button_w // 2, mixi_button_y, button_w, button_h)
+        mixi_enabled = "mixi" in self.settings.extension_packs
+        mixi_fill = SETTINGS_ACTIVE_FILL if mixi_enabled else SETTINGS_IDLE_FILL
+        mixi_border = SETTINGS_ACTIVE_BORDER if mixi_enabled else SETTINGS_IDLE_BORDER
+        GameSettingsScreen._draw_button(screen, mixi_rect, f"Mixi Pack {'ON' if mixi_enabled else 'OFF'}", mixi_fill, mixi_border)
+
+        button_rects = self._get_bottom_button_rects(screen_rect)
+        GameSettingsScreen._draw_button(screen, button_rects["back"], "BACK", SETTINGS_DANGER_FILL, SETTINGS_DANGER_BORDER)
+        GameSettingsScreen._draw_button(screen, button_rects["start_game"], "START GAME", SETTINGS_ACTIVE_FILL, SETTINGS_ACTIVE_BORDER)
         if self.message:
             footer = font_label.render(self.message, True, (234, 213, 145))
             footer_y = button_rects["back"].top - 18
@@ -1269,7 +1405,7 @@ class MainSettingsScreen(BaseScreen):
 
     def _set_slider_value(self, slider_name: str, rect: pygame.Rect, mouse_x: int) -> None:
         relative_x = max(0.0, min(1.0, (mouse_x - rect.x) / rect.width))
-        stepped_value = round(relative_x * 20) / 20
+        stepped_value = round(relative_x * 100) / 100
         if slider_name == "master":
             self.audio_settings.master_volume = stepped_value
         elif slider_name == "music":
@@ -1412,6 +1548,9 @@ class PlayingScreen(BaseScreen):
         self.pending_draw_decision_card: Card | None = None
         self.pending_draw_decision_choosing_color = False
         self.uno_catch_sound = self._load_uno_catch_sound()
+        self.counter_card_sound = self._load_card_sound("counter.mp3")
+        self.draw67_card_sound = self._load_card_sound("draw67.mp3")
+        self.silence_card_sound = self._load_card_sound("silence.mp3")
         self.pause_menu_open = False
         self.pause_selected_index = 0
         self.pause_hovered_button: str | None = None
@@ -1421,6 +1560,8 @@ class PlayingScreen(BaseScreen):
         self.uno_flash_color: tuple[int, int, int] = (65, 175, 95)
         self.uno_flash_remaining_ms = 0
         self._shadow_cache: dict[tuple[int, int, int], pygame.Surface] = {}
+        self._compact_hidden_ids: set[int] = set()
+        self._compact_back_virtual_size: int = 0
 
     @property
     def wants_bgm(self) -> bool:
@@ -1520,7 +1661,7 @@ class PlayingScreen(BaseScreen):
                 self.game.player_hands[0],
                 screen.get_width(),
                 screen.get_height(),
-                hidden_card_ids=self.hidden_hand_card_ids,
+                hidden_card_ids=self._effective_hidden_ids(),
             )
 
         self._update_player_hand_animation(screen, dt)
@@ -1554,6 +1695,15 @@ class PlayingScreen(BaseScreen):
         if self.screen_shake_remaining_ms > 0:
             render_target = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
 
+        if self._compact_back_virtual_size > 0:
+            compact_back_rect = card_rect_for_hand(
+                0, self._compact_back_virtual_size, render_target.get_width(), render_target.get_height()
+            )
+            compact_hidden_count = len(self._compact_hidden_ids)
+        else:
+            compact_back_rect = None
+            compact_hidden_count = 0
+
         render_ui(
             render_target,
             self.game,
@@ -1563,13 +1713,15 @@ class PlayingScreen(BaseScreen):
             self.last_message,
             hovered_index=self.hovered_index,
             wild_color_picker_active=self._wild_color_picker_active(),
-            hidden_card_ids=self.hidden_hand_card_ids,
+            hidden_card_ids=self._effective_hidden_ids(),
             display_top_card=self.display_top_card,
             direction_arrow_angle=self.direction_arrow_angle,
             wild_hovered_color=self.wild_hovered_color,
             draw_decision_card=self.pending_draw_decision_card,
             player_names=self._player_name_map(),
             local_player_id=self._local_player_id(),
+            compact_back_rect=compact_back_rect,
+            compact_hidden_count=compact_hidden_count,
         )
         self._draw_active_cards(render_target)
         self._draw_hand_transfer_cards(render_target)
@@ -1883,9 +2035,10 @@ class PlayingScreen(BaseScreen):
             return
 
         hand = self.game.player_hands[0]
+        effective_hidden = self._effective_hidden_ids()
         clicked_card = False
         for i in range(len(hand) - 1, -1, -1):
-            if id(hand[i]) in self.hidden_hand_card_ids:
+            if id(hand[i]) in effective_hidden:
                 continue
             rect = self._hand_card_rect(hand[i])
             if rect.collidepoint(mouse_pos):
@@ -1933,6 +2086,17 @@ class PlayingScreen(BaseScreen):
             elif event.key in (pygame.K_k, pygame.K_ESCAPE):
                 self._keep_pending_draw_decision(screen, now_ms)
             return
+
+        if self._compact_back_virtual_size > 0:
+            visible_indices = self._compact_visible_card_indices()
+            if event.key == pygame.K_LEFT and visible_indices:
+                pos = visible_indices.index(self.selected_index) if self.selected_index in visible_indices else 0
+                self.selected_index = visible_indices[(pos - 1) % len(visible_indices)]
+                return
+            elif event.key == pygame.K_RIGHT and visible_indices:
+                pos = visible_indices.index(self.selected_index) if self.selected_index in visible_indices else 0
+                self.selected_index = visible_indices[(pos + 1) % len(visible_indices)]
+                return
 
         if event.key == pygame.K_LEFT and hand:
             self.selected_index = (self.selected_index - 1) % len(hand)
@@ -2039,6 +2203,26 @@ class PlayingScreen(BaseScreen):
         if self.uno_catch_sound is not None:
             self.uno_catch_sound.set_volume(self.audio_settings.sfx_mix(0.75))
             self.uno_catch_sound.play()
+
+    def _load_card_sound(self, filename: str) -> pygame.mixer.Sound | None:
+        """Load a card sound effect from the sfx directory."""
+        if not pygame.mixer.get_init():
+            return None
+        sound_path = asset_path("sfx", filename)
+        if not sound_path.exists():
+            return None
+        try:
+            sound = pygame.mixer.Sound(str(sound_path))
+            sound.set_volume(self.audio_settings.sfx_mix(0.65))
+            return sound
+        except pygame.error:
+            return None
+
+    def _play_card_sound(self, sound: pygame.mixer.Sound | None) -> None:
+        """Play a card sound effect."""
+        if sound is not None:
+            sound.set_volume(self.audio_settings.sfx_mix(0.65))
+            sound.play()
 
     def _build_ai_hand_transfer_action(self) -> PlayerAction | None:
         if self.game.pending_effect == RULE_ZERO_DIRECTION:
@@ -2239,6 +2423,14 @@ class PlayingScreen(BaseScreen):
         if action_kind == "play":
             card = result.played_card
             if card is not None:
+                # Play card-specific sounds for extension pack cards
+                if card.kind == ACTION_COUNTER:
+                    self._play_card_sound(self.counter_card_sound)
+                elif card.kind == ACTION_DRAW_67:
+                    self._play_card_sound(self.draw67_card_sound)
+                elif card.kind == ACTION_SILENCE:
+                    self._play_card_sound(self.silence_card_sound)
+                
                 self._spawn_active_card(
                     card=card,
                     owner_id=player_id,
@@ -2470,24 +2662,63 @@ class PlayingScreen(BaseScreen):
         hand = self.game.player_hands[0]
         if not hand:
             self._hand_layout_initialized = True
+            self._compact_back_virtual_size = 0
+            self._compact_hidden_ids = set()
             return
 
         speed = 14.0
         width = screen.get_width()
         height = screen.get_height()
 
+        # When hand is large, compact it: sort first, then show only 10 visible cards
+        compact = len(hand) >= 15
+        if compact:
+            sort_hand_cards(hand)
+            visible_indices = self._compact_visible_card_indices()
+            visible_count = len(visible_indices)
+            virtual_size = visible_count + 1 if visible_count else 1
+            self._compact_back_virtual_size = virtual_size
+            self._compact_hidden_ids = set()
+            back_target_rect = card_rect_for_hand(0, virtual_size, width, height)
+            if visible_indices:
+                if self.selected_index not in visible_indices:
+                    self.selected_index = visible_indices[0]
+            else:
+                self.selected_index = 0
+        else:
+            self._compact_back_virtual_size = 0
+            self._compact_hidden_ids = set()
+            visible_indices = []
+
         for i, card in enumerate(hand):
             if id(card) in self.hidden_hand_card_ids:
                 continue
-            target_rect = card_rect_for_hand(
-                i,
-                len(hand),
-                width,
-                height,
-                hovered=(i == self.hovered_index),
-            )
+
+            if compact and i not in visible_indices:
+                self._compact_hidden_ids.add(id(card))
+                card.target_pos = (float(back_target_rect.x), float(back_target_rect.y))
+                card.target_rotation = 0.0
+                card.target_scale = 1.0
+                if not self._hand_layout_initialized:
+                    card.current_pos = card.target_pos
+                    card.current_rotation = 0.0
+                else:
+                    factor = smooth_factor(dt, speed)
+                    card.current_pos = lerp_point(card.current_pos, card.target_pos, factor)
+                    card.current_rotation = lerp(card.current_rotation, 0.0, smooth_factor(dt, speed * 0.75))
+                card.current_scale = card.current_scale + (1.0 - card.current_scale) * smooth_factor(dt, 12.0)
+                continue
+
+            # For visible cards, calculate target position
+            if compact:
+                rank = visible_indices.index(i)
+                target_rect = card_rect_for_hand(rank + 1, virtual_size, width, height, hovered=(i == self.hovered_index))
+                target_rotation = get_player_hand_rotation(rank + 1, virtual_size)
+            else:
+                target_rect = card_rect_for_hand(i, len(hand), width, height, hovered=(i == self.hovered_index))
+                target_rotation = get_player_hand_rotation(i, len(hand))
+
             card.target_pos = (float(target_rect.x), float(target_rect.y))
-            target_rotation = get_player_hand_rotation(i, len(hand))
             if i == self.hovered_index:
                 target_rotation *= 0.78
             card.target_rotation = target_rotation
@@ -2509,9 +2740,26 @@ class PlayingScreen(BaseScreen):
 
         self._hand_layout_initialized = True
 
+    def _effective_hidden_ids(self) -> set[int]:
+        return self.hidden_hand_card_ids | self._compact_hidden_ids
+
+    def _compact_visible_card_indices(self) -> list[int]:
+        hand = self.game.player_hands[0]
+        if len(hand) < 15:
+            return []
+        legal_indices = self.game.get_legal_card_indices(0)
+        return legal_indices[:10]
+
     def _clamp_selected_index(self) -> None:
         hand = self.game.player_hands[0]
-        if hand:
+        if self._compact_back_virtual_size > 0:
+            visible_indices = self._compact_visible_card_indices()
+            if visible_indices:
+                if self.selected_index not in visible_indices:
+                    self.selected_index = visible_indices[0]
+                return
+            self.selected_index = 0
+        elif hand:
             self.selected_index = min(self.selected_index, len(hand) - 1)
         else:
             self.selected_index = 0
@@ -3196,7 +3444,7 @@ class MultiplayerPlayingScreen(PlayingScreen):
                 self.game.player_hands[0],
                 screen.get_width(),
                 screen.get_height(),
-                hidden_card_ids=self.hidden_hand_card_ids,
+                hidden_card_ids=self._effective_hidden_ids(),
             )
 
         self._update_player_hand_animation(screen, dt)

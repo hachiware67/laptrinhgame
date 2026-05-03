@@ -3,8 +3,11 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Set, Tuple
 
 from scripts.cards import (
+    ACTION_COUNTER,
+    ACTION_DRAW_67,
     ACTION_DRAW_TWO,
     ACTION_REVERSE,
+    ACTION_SILENCE,
     ACTION_SKIP,
     ACTION_WILD,
     ACTION_WILD_DRAW_FOUR,
@@ -12,7 +15,7 @@ from scripts.cards import (
     Card,
     sort_hand_cards,
 )
-from scripts.deck import build_standard_uno_deck
+from scripts.deck import build_deck_for_settings, build_standard_uno_deck
 
 RULE_ZERO_DIRECTION = "zero_direction"
 RULE_SEVEN_TARGET = "seven_target"
@@ -93,9 +96,11 @@ class UnoGameManager:
 
         self.pending_draw_penalty_count = 0
         self.pending_draw_penalty_kind: Optional[str] = None
+        self.pending_draw_penalty_source: Optional[int] = None
         self.pending_draw_decision_player: Optional[int] = None
         self.pending_draw_decision_card: Optional[Card] = None
         self.uno_called_players: Set[int] = set()
+        self.silence_remaining: dict[int, int] = {}
 
         self.is_animating = False
 
@@ -106,7 +111,7 @@ class UnoGameManager:
         return self.discard_pile[-1]
 
     def start_game(self) -> None:
-        self.draw_pile = build_standard_uno_deck()
+        self.draw_pile = build_deck_for_settings(self.settings.extension_packs)
         self.rng.shuffle(self.draw_pile)
         self.discard_pile.clear()
 
@@ -142,9 +147,11 @@ class UnoGameManager:
         self.pending_reaction_times.clear()
         self.pending_draw_penalty_count = 0
         self.pending_draw_penalty_kind = None
+        self.pending_draw_penalty_source = None
         self.pending_draw_decision_player = None
         self.pending_draw_decision_card = None
         self.uno_called_players.clear()
+        self.silence_remaining.clear()
 
     def draw_from_pile(self) -> Card:
         self.rebuild_draw_pile_if_needed()
@@ -163,14 +170,18 @@ class UnoGameManager:
         if self.draw_pile:
             return
 
-        if len(self.discard_pile) <= 1:
-            raise RuntimeError("No cards available to rebuild draw pile.")
+        if len(self.discard_pile) > 1:
+            top = self.discard_pile[-1]
+            to_shuffle = self.discard_pile[:-1]
+            self.discard_pile = [top]
+            self.rng.shuffle(to_shuffle)
+            self.draw_pile = to_shuffle
+            return
 
-        top = self.discard_pile[-1]
-        to_shuffle = self.discard_pile[:-1]
-        self.discard_pile = [top]
-        self.rng.shuffle(to_shuffle)
-        self.draw_pile = to_shuffle
+        # Both piles exhausted (can happen after Mixi Airstrike) — inject an emergency deck.
+        emergency = build_standard_uno_deck()
+        self.rng.shuffle(emergency)
+        self.draw_pile = emergency
 
     def get_legal_card_indices(self, player_id: int) -> List[int]:
         if self.pending_effect is not None:
@@ -190,13 +201,21 @@ class UnoGameManager:
         if self.pending_effect is not None:
             return False
 
+        # Counter card can ONLY be played after a +2 or +4, everything else is invalid
+        if candidate.kind == ACTION_COUNTER:
+            return self.pending_draw_penalty_count > 0 and self.pending_draw_penalty_kind in (ACTION_DRAW_TWO, ACTION_WILD_DRAW_FOUR)
+
         top = self.top_discard
 
         if self.pending_draw_penalty_count > 0:
-            if candidate.kind == ACTION_DRAW_TWO:
-                return self.pending_draw_penalty_kind in (ACTION_DRAW_TWO, None)
-            if candidate.kind == ACTION_WILD_DRAW_FOUR:
-                return True
+            pk = self.pending_draw_penalty_kind
+            ck = candidate.kind
+            if ck == ACTION_DRAW_TWO:
+                return pk in (ACTION_DRAW_TWO, None)
+            if ck == ACTION_WILD_DRAW_FOUR:
+                return pk != ACTION_DRAW_67
+            if ck == ACTION_DRAW_67:
+                return pk == ACTION_DRAW_67
             return False
 
         if candidate.is_wild:
@@ -281,7 +300,8 @@ class UnoGameManager:
         hand = self.player_hands[player_id]
         card.chosen_color = chosen_color if card.is_wild else None
         self.discard_pile.append(card)
-        self.current_color = chosen_color if chosen_color is not None else card.color
+        if card.kind != ACTION_COUNTER:
+            self.current_color = chosen_color if chosen_color is not None else card.color
 
         if card.kind == "number" and card.number == 0 and self.settings.rule_0_enabled:
             self.pending_effect = RULE_ZERO_DIRECTION
@@ -504,11 +524,46 @@ class UnoGameManager:
             self._advance_turn(1)
             return
 
+        if card.kind == ACTION_COUNTER:
+            source = self.pending_draw_penalty_source
+            count = self.pending_draw_penalty_count
+            self.pending_draw_penalty_count = 0
+            self.pending_draw_penalty_kind = None
+            self.pending_draw_penalty_source = None
+            if source is not None:
+                for _ in range(count):
+                    self.player_hands[source].append(self.draw_from_pile())
+                sort_hand_cards(self.player_hands[source])
+            self._advance_turn(1)
+            return
+
+        if card.kind == ACTION_SILENCE:
+            victim = self._next_player_index(1)
+            self.silence_remaining[victim] = 3
+            self._advance_turn(1)
+            return
+
+        if card.kind == ACTION_DRAW_67:
+            self._start_or_stack_draw_penalty(ACTION_DRAW_67)
+            self._advance_turn(1)
+            return
+
         self._advance_turn(1)
 
     def _start_or_stack_draw_penalty(self, kind: str) -> None:
-        self.pending_draw_penalty_count += 2 if kind == ACTION_DRAW_TWO else 4
-        if kind == ACTION_WILD_DRAW_FOUR or self.pending_draw_penalty_kind is None:
+        if kind == ACTION_DRAW_TWO:
+            amount = 2
+        elif kind == ACTION_DRAW_67:
+            amount = 67
+        else:
+            amount = 4  # ACTION_WILD_DRAW_FOUR
+
+        is_new = self.pending_draw_penalty_count == 0
+        self.pending_draw_penalty_count += amount
+        if is_new:
+            self.pending_draw_penalty_source = self.current_player
+            self.pending_draw_penalty_kind = kind
+        elif kind == ACTION_WILD_DRAW_FOUR:
             self.pending_draw_penalty_kind = kind
 
     def _draw_pending_penalty(self, player_id: int) -> ActionResult:
@@ -518,6 +573,7 @@ class UnoGameManager:
         drawn_count = self.pending_draw_penalty_count
         self.pending_draw_penalty_count = 0
         self.pending_draw_penalty_kind = None
+        self.pending_draw_penalty_source = None
         self._advance_turn(1)
         self._sync_uno_calls()
         return ActionResult(True, f"Player {player_id + 1} drew {drawn_count} cards and lost the turn.")
@@ -603,6 +659,14 @@ class UnoGameManager:
 
     def _advance_turn(self, steps: int) -> None:
         self.current_player = self._next_player_index(steps)
+        for _ in range(self.num_players):
+            if self.silence_remaining.get(self.current_player, 0) > 0:
+                self.silence_remaining[self.current_player] -= 1
+                if self.silence_remaining[self.current_player] == 0:
+                    del self.silence_remaining[self.current_player]
+                self.current_player = self._next_player_index(1)
+            else:
+                break
 
     def _pass_all_hands(self, direction: int) -> None:
         new_hands: List[List[Card]] = [[] for _ in range(self.num_players)]
@@ -618,7 +682,10 @@ class UnoGameManager:
         )
 
     def _is_forbidden_last_card(self, card: Card) -> bool:
-        return card.kind in (ACTION_SKIP, ACTION_REVERSE, ACTION_DRAW_TWO, ACTION_WILD, ACTION_WILD_DRAW_FOUR)
+        return card.kind in (
+            ACTION_SKIP, ACTION_REVERSE, ACTION_DRAW_TWO, ACTION_WILD, ACTION_WILD_DRAW_FOUR,
+            ACTION_COUNTER, ACTION_SILENCE, ACTION_DRAW_67,
+        )
 
     def _sync_uno_calls(self) -> None:
         self.uno_called_players = {
@@ -660,6 +727,11 @@ class UnoGameManager:
         if self.pending_effect == RULE_REACTION:
             return f"Rule of 8: reaction window {self.get_reaction_remaining_ms(now_ms) / 1000:.1f}s"
         if self.pending_draw_penalty_count > 0:
-            kind = "+4" if self.pending_draw_penalty_kind == ACTION_WILD_DRAW_FOUR else "+2"
-            return f"Draw penalty pending: {self.pending_draw_penalty_count} cards ({kind} stack)"
+            if self.pending_draw_penalty_kind == ACTION_WILD_DRAW_FOUR:
+                kind_str = "+4"
+            elif self.pending_draw_penalty_kind == ACTION_DRAW_67:
+                kind_str = "+67"
+            else:
+                kind_str = "+2"
+            return f"Draw penalty pending: {self.pending_draw_penalty_count} cards ({kind_str} stack)"
         return None
