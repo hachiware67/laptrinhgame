@@ -2013,6 +2013,7 @@ class PlayingScreen(BaseScreen):
     def _record_player_action_result(self, result, now_ms: int) -> None:
         self.last_message = result.message
         if result.ok and getattr(result, "uno_call_player", None) is not None:
+            self._play_uno_catch_sound()
             self._trigger_uno_flash(True)
         if result.ok and getattr(result, "uno_caught_player", None) is not None:
             self._play_uno_catch_sound()
@@ -2939,6 +2940,7 @@ class MultiplayerPlayingScreen(PlayingScreen):
             self._play_uno_catch_sound()
             self._trigger_uno_flash(False)
         elif action == "uno" and event.get("ok", True):
+            self._play_uno_catch_sound()
             self._trigger_uno_flash(True)
 
         played_payload = event.get("played_card")
