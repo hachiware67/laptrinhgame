@@ -27,6 +27,8 @@ from scripts.multiplayer import (
     MultiplayerClient,
     MultiplayerHost,
     deserialize_game_state,
+    format_lan_invite,
+    parse_lan_invite,
 )
 from scripts.sprites import CardSpriteAtlas
 from scripts.ui import (
@@ -256,6 +258,7 @@ class MultiplayerScreen(BaseScreen):
         default_name = (os.getenv("USERNAME") or os.getenv("USER") or "Player").strip()
         self.player_name = default_name[:20] or "Player"
         self.join_password = ""
+        self.lan_invite = ""
         self.create_room_name = "UNO Room"
         self.create_password = ""
         self.create_capacity = 4
@@ -275,7 +278,8 @@ class MultiplayerScreen(BaseScreen):
         screen: pygame.Surface,
         now_ms: int,
     ) -> ScreenResult:
-        self._refresh_lobby_cache()
+        if self.mode == self.MODE_LOBBY:
+            self._refresh_lobby_cache()
         for event in events:
             if event.type == pygame.QUIT:
                 self._close_network()
@@ -329,7 +333,8 @@ class MultiplayerScreen(BaseScreen):
                 elif packet_type == "disconnected":
                     self.message = str(packet.get("message", "Disconnected from host."))
                     self._leave_room(keep_message=True)
-        self._refresh_lobby_cache()
+        if self.mode == self.MODE_LOBBY:
+            self._refresh_lobby_cache()
         return None
 
     def draw(self, screen: pygame.Surface, now_ms: int) -> None:
@@ -368,6 +373,7 @@ class MultiplayerScreen(BaseScreen):
 
         name_rect = self._player_name_input_rect(panel)
         pwd_rect = self._join_password_input_rect(panel)
+        invite_rect = self._lan_invite_input_rect(panel)
         self._draw_input_box(screen, name_rect, f"Name: {self.player_name}", self.focus_field == "player_name")
         join_password_text = "*" * len(self.join_password) if self.join_password else "(none)"
         self._draw_input_box(
@@ -376,11 +382,22 @@ class MultiplayerScreen(BaseScreen):
             f"Join Password: {join_password_text}",
             self.focus_field == "join_password",
         )
+        self._draw_input_box(
+            screen,
+            invite_rect,
+            f"LAN Invite: {self.lan_invite or 'ROOMCODE@IP:PORT'}",
+            self.focus_field == "lan_invite",
+            font_size=22,
+        )
 
         rows = self._room_row_rects(panel, len(self.lobby_rooms))
         if not rows:
-            empty = body_font.render("No joinable rooms found on LAN.", True, (188, 200, 212))
-            screen.blit(empty, (panel.x + 36, panel.y + 170))
+            empty = body_font.render(
+                "No rooms found. Ask the host for the LAN Invite shown in their room.",
+                True,
+                (188, 200, 212),
+            )
+            screen.blit(empty, (panel.x + 36, panel.y + 220))
         else:
             for idx, room in enumerate(self.lobby_rooms):
                 row_rect = rows[idx]
@@ -412,6 +429,13 @@ class MultiplayerScreen(BaseScreen):
             "Join Selected",
             (70, 130, 225),
             (158, 194, 246),
+        )
+        draw_theme_button(
+            screen,
+            buttons["join_invite"],
+            "Join Invite",
+            (57, 145, 118),
+            (142, 220, 196),
         )
         draw_theme_button(
             screen,
@@ -500,7 +524,39 @@ class MultiplayerScreen(BaseScreen):
         )
         screen.blit(detail, detail.get_rect(midtop=(panel.centerx, panel.y + 76)))
 
-        player_panel = pygame.Rect(panel.x + 36, panel.y + 130, panel.width - 72, panel.height - 280)
+        buttons = self._room_button_rects(panel, started=started)
+        player_top = panel.y + 130
+        if self.is_host and self.host is not None:
+            try:
+                invite_text = format_lan_invite(
+                    self.host.room_id,
+                    self.host.host_public_address,
+                    self.host.host_port,
+                )
+            except ValueError:
+                invite_text = f"{self.host.room_id}@{self.host.host_public_address}:{self.host.host_port}"
+            invite_line = small_font.render(f"LAN Invite: {invite_text}", True, (142, 220, 196))
+            screen.blit(invite_line, invite_line.get_rect(midtop=(panel.centerx, panel.y + 110)))
+            player_top = panel.y + 166
+
+            other_ips = [ip for ip in self.host.host_lan_addresses if ip != self.host.host_public_address]
+            if other_ips:
+                other_line = small_font.render(f"Other IPs: {', '.join(other_ips[:3])}", True, (188, 200, 212))
+                screen.blit(other_line, other_line.get_rect(midtop=(panel.centerx, panel.y + 136)))
+                player_top = panel.y + 192
+
+            if self.host.used_fallback_port:
+                fallback_y = panel.y + 136 if not other_ips else panel.y + 162
+                fallback_line = small_font.render(
+                    f"Default port busy; using {self.host.host_port}",
+                    True,
+                    (245, 213, 150),
+                )
+                screen.blit(fallback_line, fallback_line.get_rect(midtop=(panel.centerx, fallback_y)))
+                player_top = max(player_top, fallback_y + 34)
+
+        player_panel_h = max(124, buttons["leave"].y - player_top - 28)
+        player_panel = pygame.Rect(panel.x + 36, player_top, panel.width - 72, player_panel_h)
         draw_theme_panel(screen, player_panel, alpha=120)
         player_title = body_font.render("Players in Room", True, (242, 246, 250))
         screen.blit(player_title, player_title.get_rect(midtop=(player_panel.centerx, player_panel.y + 16)))
@@ -520,7 +576,6 @@ class MultiplayerScreen(BaseScreen):
             )
             screen.blit(start_note, start_note.get_rect(midtop=(panel.centerx, player_panel.bottom + 18)))
 
-        buttons = self._room_button_rects(panel, started=started)
         if self.is_host and not started:
             draw_theme_button(
                 screen,
@@ -555,12 +610,15 @@ class MultiplayerScreen(BaseScreen):
         if self.host is not None:
             self.host.close()
             self.host = None
+        self._close_browser()
+        self.room_state = None
+        self.is_host = False
+
+    def _close_browser(self) -> None:
         browser = getattr(self, "_browser", None)
         if browser is not None:
             browser.close()
             self._browser = None
-        self.room_state = None
-        self.is_host = False
 
     def _leave_room(self, keep_message: bool = False) -> None:
         if self.client is not None:
@@ -580,7 +638,12 @@ class MultiplayerScreen(BaseScreen):
     def _handle_text_input(self, event: pygame.event.Event) -> None:
         if event.key == pygame.K_TAB:
             if self.mode == self.MODE_LOBBY:
-                self.focus_field = "join_password" if self.focus_field == "player_name" else "player_name"
+                order = ["player_name", "join_password", "lan_invite"]
+                try:
+                    current_idx = order.index(self.focus_field)
+                except ValueError:
+                    current_idx = 0
+                self.focus_field = order[(current_idx + 1) % len(order)]
             elif self.mode == self.MODE_CREATE:
                 self.focus_field = "create_password" if self.focus_field == "create_room_name" else "create_room_name"
             return
@@ -601,6 +664,8 @@ class MultiplayerScreen(BaseScreen):
             self.player_name = (self.player_name + char)[:20]
         elif self.focus_field == "join_password":
             self.join_password = (self.join_password + char)[:24]
+        elif self.focus_field == "lan_invite":
+            self.lan_invite = (self.lan_invite + char)[:80]
         elif self.focus_field == "create_room_name":
             self.create_room_name = (self.create_room_name + char)[:28]
         elif self.focus_field == "create_password":
@@ -611,6 +676,8 @@ class MultiplayerScreen(BaseScreen):
             self.player_name = self.player_name[:-1]
         elif self.focus_field == "join_password":
             self.join_password = self.join_password[:-1]
+        elif self.focus_field == "lan_invite":
+            self.lan_invite = self.lan_invite[:-1]
         elif self.focus_field == "create_room_name":
             self.create_room_name = self.create_room_name[:-1]
         elif self.focus_field == "create_password":
@@ -620,11 +687,15 @@ class MultiplayerScreen(BaseScreen):
         panel = self._main_panel_rect(screen_rect)
         name_rect = self._player_name_input_rect(panel)
         pwd_rect = self._join_password_input_rect(panel)
+        invite_rect = self._lan_invite_input_rect(panel)
         if name_rect.collidepoint(mouse_pos):
             self.focus_field = "player_name"
             return None
         if pwd_rect.collidepoint(mouse_pos):
             self.focus_field = "join_password"
+            return None
+        if invite_rect.collidepoint(mouse_pos):
+            self.focus_field = "lan_invite"
             return None
 
         rows = self._room_row_rects(panel, len(self.lobby_rooms))
@@ -646,6 +717,9 @@ class MultiplayerScreen(BaseScreen):
             return None
         if buttons["join"].collidepoint(mouse_pos):
             self._join_selected_room()
+            return None
+        if buttons["join_invite"].collidepoint(mouse_pos):
+            self._join_lan_invite()
             return None
         return None
 
@@ -671,13 +745,51 @@ class MultiplayerScreen(BaseScreen):
         if not ok or room_state is None:
             client.close()
             self.client = None
-            self.message = message
+            self.message = self._friendly_join_error(message)
             return
         self.client = client
         self.room_state = room_state
         self.mode = self.MODE_ROOM
         self.is_host = False
         self.message = message
+
+    def _join_lan_invite(self) -> None:
+        try:
+            invite = parse_lan_invite(self.lan_invite)
+        except ValueError as exc:
+            self.message = str(exc)
+            return
+
+        if self.host is not None:
+            self.host.close()
+            self.host = None
+        if self.client is not None:
+            self.client.close()
+
+        client = MultiplayerClient(self.player_name)
+        ok, message, room_state = client.connect_and_join(
+            host_address=invite.host_address,
+            host_port=invite.host_port,
+            room_id=invite.room_id,
+            password=self.join_password,
+        )
+        if not ok or room_state is None:
+            client.close()
+            self.client = None
+            self.message = self._friendly_join_error(message)
+            return
+
+        self.client = client
+        self.room_state = room_state
+        self.mode = self.MODE_ROOM
+        self.is_host = False
+        self.message = message
+
+    @staticmethod
+    def _friendly_join_error(message: str) -> str:
+        if message.startswith("Could not connect to host:"):
+            return "Could not reach host. Check both PCs are on the same LAN and firewall allows Python."
+        return message
 
     def _handle_create_click(self, mouse_pos: tuple[int, int], screen_rect: pygame.Rect) -> Optional[ScreenResult]:
         panel = self._main_panel_rect(screen_rect)
@@ -704,6 +816,7 @@ class MultiplayerScreen(BaseScreen):
             self.message = "Room creation canceled."
             return None
         if buttons["confirm"].collidepoint(mouse_pos):
+            self._close_browser()
             host_setup = MultiplayerHostSetup(
                 player_name=self.player_name.strip() or "Host",
                 room_name=self.create_room_name.strip() or "UNO Room",
@@ -814,21 +927,29 @@ class MultiplayerScreen(BaseScreen):
         return pygame.Rect(panel.x + 464, panel.y + 72, 420, 56)
 
     @staticmethod
+    def _lan_invite_input_rect(panel: pygame.Rect) -> pygame.Rect:
+        return pygame.Rect(panel.x + 28, panel.y + 140, panel.width - 56, 52)
+
+    @staticmethod
     def _room_row_rects(panel: pygame.Rect, count: int) -> list[pygame.Rect]:
         row_h = 62
-        start_y = panel.y + 150
-        max_rows = max(0, min(7, count))
+        gap = 12
+        start_y = panel.y + 214
+        button_top = panel.bottom - row_h - 26
+        available_h = max(0, button_top - start_y - 16)
+        max_rows = max(0, min(count, available_h // (row_h + gap)))
         return [pygame.Rect(panel.x + 28, start_y + idx * (row_h + 12), panel.width - 56, row_h) for idx in range(max_rows)]
 
     @staticmethod
     def _lobby_button_rects(panel: pygame.Rect) -> dict[str, pygame.Rect]:
         button_h = 62
-        button_w = 228
+        button_w = 204
         y = panel.bottom - button_h - 26
-        gap = 18
+        gap = 14
         return {
             "create": pygame.Rect(panel.x + 28, y, button_w, button_h),
             "join": pygame.Rect(panel.x + 28 + button_w + gap, y, button_w, button_h),
+            "join_invite": pygame.Rect(panel.x + 28 + 2 * (button_w + gap), y, button_w, button_h),
             "back": pygame.Rect(panel.right - button_w - 28, y, button_w, button_h),
         }
 
@@ -1286,7 +1407,11 @@ class ExtensionPackScreen(BaseScreen):
                         multiplayer_screen.is_host = True
                         multiplayer_screen.host = host
                         multiplayer_screen.room_state = host.room_state
-                        multiplayer_screen.message = f"Room created. Share code: {host.room_id}"
+                        try:
+                            invite_text = format_lan_invite(host.room_id, host.host_public_address, host.host_port)
+                        except ValueError:
+                            invite_text = f"{host.room_id}@{host.host_public_address}:{host.host_port}"
+                        multiplayer_screen.message = f"Room created. Share invite: {invite_text}"
                         return ScreenResult(next_screen=multiplayer_screen)
 
                     game = UnoGameManager(settings=self.settings)

@@ -22,12 +22,21 @@ from scripts.game_manager import (
 )
 
 DISCOVERY_PORT = 43841
+DEFAULT_GAME_PORT = 43842
 DISCOVERY_INTERVAL_SEC = 1.0
 ROOM_TTL_SEC = 3.2
 MAX_PACKET_SIZE = 65536
 MAX_TCP_LINE_SIZE = 65536
 MAX_DISPLAY_NAME_LENGTH = 24
 MAX_ROOM_NAME_LENGTH = 32
+ROOM_QUERY_TYPE = "room_query"
+
+
+@dataclass(frozen=True)
+class LanInvite:
+    room_id: str
+    host_address: str
+    host_port: int
 
 
 @dataclass
@@ -480,6 +489,7 @@ class MultiplayerHost:
         password: str,
         capacity: int,
         host_address: str = "0.0.0.0",
+        preferred_port: int = DEFAULT_GAME_PORT,
         settings: Optional[GameSettings] = None,
     ) -> None:
         if capacity not in (2, 4):
@@ -508,22 +518,35 @@ class MultiplayerHost:
 
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server_socket.bind((host_address, 0))
+        self.used_fallback_port = False
+        self._bind_server_socket(host_address, preferred_port)
         self._server_socket.listen()
         self._server_socket.settimeout(0.5)
 
         bound_host, bound_port = self._server_socket.getsockname()
         self.host_port = int(bound_port)
-        self.host_public_address = _pick_public_ipv4()
-        if self.host_public_address is None:
-            self.host_public_address = "127.0.0.1"
+        self.host_lan_addresses = likely_lan_ipv4_addresses()
+        self.host_public_address = self.host_lan_addresses[0] if self.host_lan_addresses else "127.0.0.1"
         self._discovery_targets = _discovery_broadcast_targets(self.host_public_address)
         self._event_seq = 0
 
         self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
         self._advertise_thread = threading.Thread(target=self._advertise_loop, daemon=True)
+        self._discovery_thread = threading.Thread(target=self._discovery_listen_loop, daemon=True)
         self._accept_thread.start()
         self._advertise_thread.start()
+        self._discovery_thread.start()
+
+    def _bind_server_socket(self, host_address: str, preferred_port: int) -> None:
+        try:
+            self._server_socket.bind((host_address, preferred_port))
+            return
+        except OSError:
+            if preferred_port == 0:
+                raise
+
+        self._server_socket.bind((host_address, 0))
+        self.used_fallback_port = True
 
     @property
     def host_player_token(self) -> str:
@@ -868,6 +891,65 @@ class MultiplayerHost:
         except OSError:
             pass
 
+    def _room_advertisement_packet(self) -> bytes:
+        with self._lock:
+            room_payload = self._serialize_room_state()
+            room_payload.update(
+                {
+                    "host_address": self.host_public_address,
+                    "host_port": self.host_port,
+                    "ts": time.time(),
+                }
+            )
+        return json.dumps({"type": "room_advertisement", "room": room_payload}).encode("utf-8")
+
+    def _handle_discovery_packet(self, payload: dict[str, Any], source_addr: tuple[str, int]) -> None:
+        if payload.get("type") != ROOM_QUERY_TYPE:
+            return
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.sendto(self._room_advertisement_packet(), source_addr)
+        except OSError:
+            pass
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def _discovery_listen_loop(self) -> None:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("", DISCOVERY_PORT))
+            sock.settimeout(0.5)
+        except OSError:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            return
+
+        while not self._stop_event.is_set():
+            try:
+                packet, source_addr = sock.recvfrom(MAX_PACKET_SIZE)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                payload = json.loads(packet.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if isinstance(payload, dict):
+                self._handle_discovery_packet(payload, source_addr)
+
+        try:
+            sock.close()
+        except OSError:
+            pass
+
     def _advertise_loop(self) -> None:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -875,17 +957,8 @@ class MultiplayerHost:
         except OSError:
             pass
         while not self._stop_event.is_set():
-            with self._lock:
-                room_payload = self._serialize_room_state()
-                room_payload.update(
-                    {
-                        "host_address": self.host_public_address,
-                        "host_port": self.host_port,
-                        "ts": time.time(),
-                    }
-                )
             try:
-                packet = json.dumps({"type": "room_advertisement", "room": room_payload}).encode("utf-8")
+                packet = self._room_advertisement_packet()
                 for target in self._discovery_targets:
                     sock.sendto(packet, (target, DISCOVERY_PORT))
             except OSError:
@@ -922,12 +995,27 @@ class LobbyBrowser:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        except OSError:
+            pass
+        try:
             sock.bind(("", DISCOVERY_PORT))
         except OSError:
             sock.bind(("127.0.0.1", DISCOVERY_PORT))
         sock.settimeout(0.5)
+        query_targets = _discovery_broadcast_targets(_pick_public_ipv4() or "")
+        next_query_ts = 0.0
 
         while not self._stop_event.is_set():
+            now = time.time()
+            if now >= next_query_ts:
+                query = json.dumps({"type": ROOM_QUERY_TYPE}).encode("utf-8")
+                for target in query_targets:
+                    try:
+                        sock.sendto(query, (target, DISCOVERY_PORT))
+                    except OSError:
+                        continue
+                next_query_ts = now + DISCOVERY_INTERVAL_SEC
             try:
                 packet, source_addr = sock.recvfrom(MAX_PACKET_SIZE)
             except socket.timeout:
@@ -949,7 +1037,7 @@ class LobbyBrowser:
             room_payload = payload.get("room")
             if not isinstance(room_payload, dict):
                 continue
-            room = _room_from_payload(room_payload, source_addr[0])
+            room = _room_from_payload(room_payload, source_addr[0], received_ts=time.time())
             if room is None:
                 continue
             with self._lock:
@@ -961,7 +1049,56 @@ class LobbyBrowser:
             pass
 
 
-def _room_from_payload(payload: dict[str, Any], source_host: str) -> Optional[LobbyRoomInfo]:
+def parse_lan_invite(value: str) -> LanInvite:
+    raw = str(value).strip()
+    try:
+        room_part, address_part = raw.split("@", 1)
+        host_part, port_part = address_part.rsplit(":", 1)
+    except ValueError as exc:
+        raise ValueError("Use ROOMCODE@IP:PORT, for example ABC123@192.168.2.200:43842.") from exc
+
+    room_id = room_part.strip().upper()
+    host_address = host_part.strip()
+    port_text = port_part.strip()
+
+    if not room_id or len(room_id) > 16 or not room_id.isalnum():
+        raise ValueError("Use ROOMCODE@IP:PORT, for example ABC123@192.168.2.200:43842.")
+    if not _is_valid_invite_host(host_address):
+        raise ValueError("Use ROOMCODE@IP:PORT, for example ABC123@192.168.2.200:43842.")
+    try:
+        host_port = int(port_text)
+    except ValueError as exc:
+        raise ValueError("Use ROOMCODE@IP:PORT, for example ABC123@192.168.2.200:43842.") from exc
+    if not 1 <= host_port <= 65535:
+        raise ValueError("Use ROOMCODE@IP:PORT, for example ABC123@192.168.2.200:43842.")
+
+    return LanInvite(room_id=room_id, host_address=host_address, host_port=host_port)
+
+
+def format_lan_invite(room_id: str, host_address: str, host_port: int) -> str:
+    invite = parse_lan_invite(f"{room_id}@{host_address}:{host_port}")
+    return f"{invite.room_id}@{invite.host_address}:{invite.host_port}"
+
+
+def _is_valid_invite_host(host_address: str) -> bool:
+    if not host_address or any(char.isspace() for char in host_address):
+        return False
+    if any(char in host_address for char in "/\\@"):
+        return False
+    try:
+        ipaddress.ip_address(host_address)
+        return True
+    except ValueError:
+        pass
+    labels = host_address.split(".")
+    return all(label and label.replace("-", "").isalnum() for label in labels)
+
+
+def _room_from_payload(
+    payload: dict[str, Any],
+    source_host: str,
+    received_ts: Optional[float] = None,
+) -> Optional[LobbyRoomInfo]:
     try:
         room_id = str(payload["room_id"])
         room_name = _sanitize_room_name(str(payload["room_name"]))
@@ -972,7 +1109,6 @@ def _room_from_payload(payload: dict[str, Any], source_host: str) -> Optional[Lo
         human_count = int(payload["human_count"])
         has_password = bool(payload.get("has_password", False))
         started = bool(payload.get("started", False))
-        seen = float(payload.get("ts", time.time()))
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -997,7 +1133,7 @@ def _room_from_payload(payload: dict[str, Any], source_host: str) -> Optional[Lo
         human_count=max(0, min(capacity, human_count)),
         has_password=has_password,
         started=started,
-        last_seen_ts=seen,
+        last_seen_ts=received_ts if received_ts is not None else time.time(),
     )
 
 
@@ -1033,6 +1169,23 @@ def _pick_public_ipv4() -> Optional[str]:
             probe.close()
         except OSError:
             pass
+
+
+def likely_lan_ipv4_addresses(primary_ip: Optional[str] = None) -> tuple[str, ...]:
+    primary = primary_ip if primary_ip is not None else _pick_public_ipv4()
+    addresses: list[str] = []
+    for ip_text in _candidate_local_ipv4s(primary or ""):
+        try:
+            ip_obj = ipaddress.ip_address(ip_text)
+        except ValueError:
+            continue
+        if not isinstance(ip_obj, ipaddress.IPv4Address):
+            continue
+        if ip_obj.is_loopback or ip_obj.is_multicast or ip_obj.is_unspecified or ip_obj.is_link_local:
+            continue
+        if ip_text not in addresses:
+            addresses.append(ip_text)
+    return tuple(addresses)
 
 
 def _discovery_broadcast_targets(primary_ip: str) -> tuple[str, ...]:
