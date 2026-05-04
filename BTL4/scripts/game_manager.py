@@ -4,8 +4,10 @@ from typing import List, Optional, Set, Tuple
 
 from scripts.cards import (
     ACTION_COUNTER,
+    ACTION_FLASHBANG,
     ACTION_DRAW_67,
     ACTION_DRAW_TWO,
+    ACTION_MOM_MAY_CRY,
     ACTION_REVERSE,
     ACTION_SILENCE,
     ACTION_SKIP,
@@ -101,6 +103,8 @@ class UnoGameManager:
         self.pending_draw_decision_card: Optional[Card] = None
         self.uno_called_players: Set[int] = set()
         self.silence_remaining: dict[int, int] = {}
+        self.flashbang_remaining: dict[int, int] = {}
+        self.active_flashbang_player: Optional[int] = None
 
         self.is_animating = False
 
@@ -127,7 +131,7 @@ class UnoGameManager:
 
         while True:
             card = self.draw_from_pile()
-            if card.is_wild:
+            if card.is_wild or card.is_none_type:
                 self.draw_pile.insert(0, card)
                 self.rng.shuffle(self.draw_pile)
                 continue
@@ -152,6 +156,8 @@ class UnoGameManager:
         self.pending_draw_decision_card = None
         self.uno_called_players.clear()
         self.silence_remaining.clear()
+        self.flashbang_remaining.clear()
+        self.active_flashbang_player = None
 
     def draw_from_pile(self) -> Card:
         self.rebuild_draw_pile_if_needed()
@@ -165,6 +171,9 @@ class UnoGameManager:
             return "Rule of 8 resolved."
 
         return None
+
+    def is_player_flashbanged(self, player_id: int) -> bool:
+        return self.active_flashbang_player == player_id or self.flashbang_remaining.get(player_id, 0) > 0
 
     def rebuild_draw_pile_if_needed(self) -> None:
         if self.draw_pile:
@@ -218,7 +227,7 @@ class UnoGameManager:
                 return pk == ACTION_DRAW_67
             return False
 
-        if candidate.is_wild:
+        if candidate.is_wild or candidate.is_none_type:
             return True
         if candidate.color == self.current_color:
             return True
@@ -300,7 +309,7 @@ class UnoGameManager:
         hand = self.player_hands[player_id]
         card.chosen_color = chosen_color if card.is_wild else None
         self.discard_pile.append(card)
-        if card.kind != ACTION_COUNTER:
+        if not card.is_none_type:
             self.current_color = chosen_color if chosen_color is not None else card.color
 
         if card.kind == "number" and card.number == 0 and self.settings.rule_0_enabled:
@@ -403,7 +412,7 @@ class UnoGameManager:
             self._sync_uno_calls()
             return result
 
-        legal_before_draw = self.get_legal_card_indices(player_id)
+        legal_before_draw = [] if self.is_player_flashbanged(player_id) else self.get_legal_card_indices(player_id)
         if legal_before_draw:
             return ActionResult(False, "You can play a card; draw only when you have no legal move.")
 
@@ -472,7 +481,7 @@ class UnoGameManager:
             self._sync_uno_calls()
             return result
 
-        legal_before_draw = self.get_legal_card_indices(player_id)
+        legal_before_draw = [] if self.is_player_flashbanged(player_id) else self.get_legal_card_indices(player_id)
         if legal_before_draw:
             return ActionResult(False, "You can play a card; draw only when you have no legal move.")
 
@@ -548,7 +557,37 @@ class UnoGameManager:
             self._advance_turn(1)
             return
 
+        if card.kind == ACTION_MOM_MAY_CRY:
+            self._reduce_hand_to_seven(self.current_player)
+            self._advance_turn(1)
+            return
+
+        if card.kind == ACTION_FLASHBANG:
+            self._apply_flashbang(self.current_player)
+            self._advance_turn(1)
+            return
+
         self._advance_turn(1)
+
+    def _reduce_hand_to_seven(self, player_id: int) -> None:
+        hand = self.player_hands[player_id]
+        if len(hand) <= 7:
+            return
+
+        keep_indices = set(self.rng.sample(range(len(hand)), 7))
+        kept_cards = [card for index, card in enumerate(hand) if index in keep_indices]
+        returned_cards = [card for index, card in enumerate(hand) if index not in keep_indices]
+        self.player_hands[player_id] = kept_cards
+        sort_hand_cards(self.player_hands[player_id])
+        self.draw_pile.extend(returned_cards)
+        self.rng.shuffle(self.draw_pile)
+
+    def _apply_flashbang(self, player_id: int) -> None:
+        self.flashbang_remaining[player_id] = self.flashbang_remaining.get(player_id, 0) + 1
+        for other_player in range(self.num_players):
+            if other_player == player_id:
+                continue
+            self.flashbang_remaining[other_player] = self.flashbang_remaining.get(other_player, 0) + 2
 
     def _start_or_stack_draw_penalty(self, kind: str) -> None:
         if kind == ACTION_DRAW_TWO:
@@ -658,6 +697,14 @@ class UnoGameManager:
         return (self.current_player + steps * self.turn_direction) % self.num_players
 
     def _advance_turn(self, steps: int) -> None:
+        if self.active_flashbang_player == self.current_player:
+            remaining = self.flashbang_remaining.get(self.current_player, 0) - 1
+            if remaining > 0:
+                self.flashbang_remaining[self.current_player] = remaining
+            else:
+                self.flashbang_remaining.pop(self.current_player, None)
+            self.active_flashbang_player = None
+
         self.current_player = self._next_player_index(steps)
         for _ in range(self.num_players):
             if self.silence_remaining.get(self.current_player, 0) > 0:
@@ -667,6 +714,10 @@ class UnoGameManager:
                 self.current_player = self._next_player_index(1)
             else:
                 break
+        if self.flashbang_remaining.get(self.current_player, 0) > 0:
+            self.active_flashbang_player = self.current_player
+        else:
+            self.active_flashbang_player = None
 
     def _pass_all_hands(self, direction: int) -> None:
         new_hands: List[List[Card]] = [[] for _ in range(self.num_players)]
@@ -684,7 +735,7 @@ class UnoGameManager:
     def _is_forbidden_last_card(self, card: Card) -> bool:
         return card.kind in (
             ACTION_SKIP, ACTION_REVERSE, ACTION_DRAW_TWO, ACTION_WILD, ACTION_WILD_DRAW_FOUR,
-            ACTION_COUNTER, ACTION_SILENCE, ACTION_DRAW_67,
+            ACTION_COUNTER, ACTION_SILENCE, ACTION_DRAW_67, ACTION_FLASHBANG, ACTION_MOM_MAY_CRY,
         )
 
     def _sync_uno_calls(self) -> None:

@@ -1266,6 +1266,7 @@ def _serialize_game_settings(settings: GameSettings) -> dict[str, Any]:
         "rule_8_enabled": settings.rule_8_enabled,
         "rule_8_reaction_timer_ms": settings.rule_8_reaction_timer_ms,
         "two_player_reverse_behavior": settings.two_player_reverse_behavior,
+        "extension_packs": list(settings.extension_packs),
     }
 
 
@@ -1278,6 +1279,7 @@ def _deserialize_game_settings(payload: dict[str, Any]) -> GameSettings:
         rule_8_enabled=bool(payload.get("rule_8_enabled", True)),
         rule_8_reaction_timer_ms=int(payload.get("rule_8_reaction_timer_ms", 3000)),
         two_player_reverse_behavior=str(payload.get("two_player_reverse_behavior", "reverse")),
+        extension_packs=[str(item) for item in payload.get("extension_packs", []) if isinstance(item, str)],
     )
 
 
@@ -1302,6 +1304,8 @@ def _serialize_game_state(game: UnoGameManager) -> dict[str, Any]:
         "pending_draw_penalty_kind": game.pending_draw_penalty_kind,
         "pending_draw_decision_player": game.pending_draw_decision_player,
         "pending_draw_decision_card": _serialize_card(game.pending_draw_decision_card),
+        "flashbang_remaining": [[int(player_id), int(count)] for player_id, count in sorted(game.flashbang_remaining.items())],
+        "active_flashbang_player": game.active_flashbang_player,
         "uno_called_players": sorted(game.uno_called_players),
     }
 
@@ -1342,6 +1346,13 @@ def deserialize_game_state(payload: dict[str, Any]) -> UnoGameManager:
     pending_player = payload.get("pending_draw_decision_player")
     game.pending_draw_decision_player = int(pending_player) if pending_player is not None else None
     game.pending_draw_decision_card = _deserialize_card(payload.get("pending_draw_decision_card"))
+    game.flashbang_remaining = {}
+    for item in payload.get("flashbang_remaining", []):
+        if not isinstance(item, list) or len(item) != 2:
+            continue
+        game.flashbang_remaining[int(item[0])] = int(item[1])
+    active_flashbang = payload.get("active_flashbang_player")
+    game.active_flashbang_player = int(active_flashbang) if active_flashbang is not None else None
     game.uno_called_players = {int(pid) for pid in payload.get("uno_called_players", [])}
     game.is_animating = False
     return game

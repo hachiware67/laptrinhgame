@@ -9,7 +9,16 @@ import pygame
 from scripts.animation import ActiveCard, lerp, lerp_point, smooth_factor, transform_card_surface
 from scripts.assets import asset_path
 from scripts.ai import AITurnOutcome, perform_simple_ai_turn
-from scripts.cards import ACTION_WILD_DRAW_FOUR, ACTION_COUNTER, ACTION_DRAW_67, ACTION_SILENCE, Card, sort_hand_cards
+from scripts.cards import (
+    ACTION_COUNTER,
+    ACTION_DRAW_67,
+    ACTION_FLASHBANG,
+    ACTION_MOM_MAY_CRY,
+    ACTION_SILENCE,
+    ACTION_WILD_DRAW_FOUR,
+    Card,
+    sort_hand_cards,
+)
 from scripts.game_manager import (
     ActionResult,
     GameSettings,
@@ -33,6 +42,7 @@ from scripts.multiplayer import (
 from scripts.sprites import CardSpriteAtlas
 from scripts.ui import (
     card_rect_for_hand,
+    draw_card_tooltip,
     draw_theme_background,
     draw_theme_button,
     draw_theme_panel,
@@ -121,6 +131,12 @@ def _remap_game_payload_to_local_view(
         for item in game_payload.get("pending_reaction_times", [])
         if isinstance(item, list) and len(item) == 2
     ]
+    remapped["flashbang_remaining"] = [
+        [_canonical_to_view_player(int(item[0]), local_canonical_player_id, num_players), int(item[1])]
+        for item in game_payload.get("flashbang_remaining", [])
+        if isinstance(item, list) and len(item) == 2
+    ]
+    remapped["active_flashbang_player"] = remap_player_value(game_payload.get("active_flashbang_player"))
     remapped["uno_called_players"] = [
         _canonical_to_view_player(int(pid), local_canonical_player_id, num_players)
         for pid in game_payload.get("uno_called_players", [])
@@ -470,7 +486,7 @@ class InstructionsScreen(BaseScreen):
                 ),
                 (
                     "No Win With Action Card",
-                    ["You cannot finish the game on Skip, Reverse, +2, Wild, +4, or Mixi action cards."],
+                    ["You cannot finish the game on Skip, Reverse, +2, Wild, +4, or extension pack cards."],
                 ),
                 (
                     "+2 / +4 Stacking",
@@ -484,19 +500,35 @@ class InstructionsScreen(BaseScreen):
         if tab_key == cls.TAB_EXTENSION:
             return [
                 (
-                    "Mixi Airstrike (+67)",
-                    ["Starts a draw-67 penalty for the next player.", "Stacking rules apply."],
+                    "Mixi Airstrike",
+                    ["+67.", "Only Mixi Airstrikes stack with eachother, and cannot be countered."],
                 ),
                 (
-                    "Mixi Counter (Dogs Will Pay)",
+                    "Mixi Counter",
                     [
+                        "Dogs will pay.",
                         "Playable only when a +2 or +4 penalty is active.",
                         "Cancels the stack and makes the penalty source draw the cards.",
                     ],
                 ),
                 (
-                    "Faker Silence",
-                    ["Silences the next player for 3 turns (they are skipped)."],
+                    "Faker's Silence",
+                    ["The next player will feel Faker's aura (skipped for 3 turns)."],
+                ),
+                (
+                    "Mom Physics May Cry",
+                    [
+                        "Mixi feels bad.",
+                        "Cuts your hand down to 7 random cards and shuffles the rest back into the draw pile."
+                    ],
+                ),
+                (
+                    "Mixi Smile",
+                    [
+                        "Mixi Smile so bright, you're flashed.",
+                        "Flashbangs everyone: your next turn is face-down once, every other player is face-down twice.",
+                        "Flashbanged players can still try blind plays and are allowed to draw even if they secretly had a legal move.",
+                    ],
                 ),
             ]
 
@@ -505,14 +537,14 @@ class InstructionsScreen(BaseScreen):
                 "Core Gameplay",
                 [
                     "Match a card by color or number; wilds can be played anytime.",
-                    "If you have no legal move, draw one card. If it is playable, it auto-plays.",
+                    "If you have no legal move, draw one card. If it is playable, you decide whether to keep it or not.",
                     "Call UNO when you are down to one card to avoid penalties.",
                 ],
             ),
             (
                 "Turns and Flow",
                 [
-                    "Action cards change direction, skip players, or apply draw penalties.",
+                    "Action cards may change direction, skip players, or apply draw penalties.",
                     "The game ends when a player empties their hand.",
                 ],
             ),
@@ -1947,9 +1979,13 @@ class PlayingScreen(BaseScreen):
         self.pending_draw_decision_card: Card | None = None
         self.pending_draw_decision_choosing_color = False
         self.uno_catch_sound = self._load_uno_catch_sound()
-        self.counter_card_sound = self._load_card_sound("counter.mp3")
-        self.draw67_card_sound = self._load_card_sound("draw67.mp3")
-        self.silence_card_sound = self._load_card_sound("silence.mp3")
+        self.mixi_card_sounds: dict[str, pygame.mixer.Sound | None] = {
+            ACTION_COUNTER: self._load_card_sound("counter.mp3"),
+            ACTION_DRAW_67: self._load_card_sound("draw67.mp3"),
+            ACTION_SILENCE: self._load_card_sound("silence.mp3"),
+            ACTION_FLASHBANG: self._load_card_sound("flashbang.mp3"),
+            ACTION_MOM_MAY_CRY: self._load_card_sound("mom_may_cry.mp3"),
+        }
         self.pause_menu_open = False
         self.pause_selected_index = 0
         self.pause_hovered_button: str | None = None
@@ -1958,6 +1994,8 @@ class PlayingScreen(BaseScreen):
         self.uno_flash_text = ""
         self.uno_flash_color: tuple[int, int, int] = (65, 175, 95)
         self.uno_flash_remaining_ms = 0
+        self.flashbang_delay_remaining_ms = 0
+        self.flashbang_white_remaining_ms = 0
         self._shadow_cache: dict[tuple[int, int, int], pygame.Surface] = {}
         self._compact_hidden_ids: set[int] = set()
         self._compact_back_virtual_size: int = 0
@@ -2016,6 +2054,7 @@ class PlayingScreen(BaseScreen):
         self._last_update_ms = now_ms
         self._update_screen_shake(dt)
         self._update_uno_flash(dt)
+        self._update_flashbang_visual(dt)
 
         if self.game.winner is not None:
             return EndScreen(self.atlas, self.game, self.audio_settings)
@@ -2113,6 +2152,7 @@ class PlayingScreen(BaseScreen):
             hovered_index=self.hovered_index,
             wild_color_picker_active=self._wild_color_picker_active(),
             hidden_card_ids=self._effective_hidden_ids(),
+            facedown_card_ids=self._facedown_card_ids(),
             display_top_card=self.display_top_card,
             direction_arrow_angle=self.direction_arrow_angle,
             wild_hovered_color=self.wild_hovered_color,
@@ -2140,6 +2180,16 @@ class PlayingScreen(BaseScreen):
             screen.blit(scaled, scaled_rect)
 
         self._draw_uno_flash(screen)
+        self._draw_flashbang_overlay(screen)
+
+        if self.hovered_index is not None and not self.pause_menu_open:
+            hand = self.game.player_hands[0]
+            if 0 <= self.hovered_index < len(hand):
+                _hovered_card = hand[self.hovered_index]
+                if _hovered_card.is_none_type:
+                    _w, _h = screen.get_size()
+                    _hrect = card_rect_for_hand(self.hovered_index, len(hand), _w, _h, hovered=True)
+                    draw_card_tooltip(screen, _hovered_card, _hrect)
 
         if self.pause_menu_open:
             self._draw_pause_menu(screen)
@@ -2194,6 +2244,47 @@ class PlayingScreen(BaseScreen):
         center = screen_rect.center
         screen.blit(shadow, shadow.get_rect(center=(center[0] + 4, center[1] + 5)))
         screen.blit(text, text.get_rect(center=center))
+
+    def _facedown_card_ids(self) -> set[int]:
+        if self.flashbang_delay_remaining_ms > 0:
+            return set()
+        if not self.game.is_player_flashbanged(0):
+            return set()
+        return {id(card) for card in self.game.player_hands[0]}
+
+    def _play_extension_card_sound(self, card_kind: str) -> None:
+        sound = self.mixi_card_sounds.get(card_kind)
+        if sound is not None:
+            self._play_card_sound(sound)
+
+    def _trigger_flashbang_visual(self) -> None:
+        self.flashbang_delay_remaining_ms = max(self.flashbang_delay_remaining_ms, 1000)
+        self.flashbang_white_remaining_ms = max(self.flashbang_white_remaining_ms, 0)
+        self.game.is_animating = True
+
+    def _update_flashbang_visual(self, dt: float) -> None:
+        dt_ms = int(dt * 1000.0)
+        if self.flashbang_delay_remaining_ms > 0:
+            self.flashbang_delay_remaining_ms = max(0, self.flashbang_delay_remaining_ms - dt_ms)
+            if self.flashbang_delay_remaining_ms == 0:
+                self.flashbang_white_remaining_ms = max(self.flashbang_white_remaining_ms, 700)
+        elif self.flashbang_white_remaining_ms > 0:
+            self.flashbang_white_remaining_ms = max(0, self.flashbang_white_remaining_ms - dt_ms)
+
+        if self.flashbang_delay_remaining_ms > 0 or self.flashbang_white_remaining_ms > 0:
+            self.game.is_animating = True
+
+    def _draw_flashbang_overlay(self, screen: pygame.Surface) -> None:
+        if self.flashbang_delay_remaining_ms > 0:
+            return
+        if self.flashbang_white_remaining_ms <= 0:
+            return
+
+        progress = self.flashbang_white_remaining_ms / 700.0
+        alpha = max(0, min(255, int(255 * progress)))
+        overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+        overlay.fill((255, 255, 255, alpha))
+        screen.blit(overlay, (0, 0))
 
     @staticmethod
     def _pause_button_rects(screen_rect: pygame.Rect) -> dict[str, pygame.Rect]:
@@ -2822,18 +2913,13 @@ class PlayingScreen(BaseScreen):
         if action_kind == "play":
             card = result.played_card
             if card is not None:
-                # Play card-specific sounds for extension pack cards
-                if card.kind == ACTION_COUNTER:
-                    self._play_card_sound(self.counter_card_sound)
-                elif card.kind == ACTION_DRAW_67:
-                    self._play_card_sound(self.draw67_card_sound)
-                elif card.kind == ACTION_SILENCE:
-                    self._play_card_sound(self.silence_card_sound)
-                
+                self._play_extension_card_sound(card.kind)
+                if card.kind == ACTION_FLASHBANG:
+                    self._trigger_flashbang_visual()
                 self._spawn_active_card(
                     card=card,
                     owner_id=player_id,
-                    kind="play",
+                    kind="play_flip" if card.kind == ACTION_FLASHBANG else "play",
                     start_pos=get_player_anchor_point(screen_rect, player_id, self.game.num_players),
                     target_pos=get_discard_pile_rect(screen_rect).center,
                     start_rotation=get_player_card_rotation(player_id, self.game.num_players),
@@ -2845,11 +2931,14 @@ class PlayingScreen(BaseScreen):
 
         if action_kind == "draw":
             if result.played_card is not None and result.drew_card is not None:
+                self._play_extension_card_sound(result.played_card.kind)
+                if result.played_card.kind == ACTION_FLASHBANG:
+                    self._trigger_flashbang_visual()
                 # The drawn card was auto-played; animate it from the draw pile to the discard pile.
                 self._spawn_active_card(
                     card=result.played_card,
                     owner_id=player_id,
-                    kind="play",
+                    kind="play_flip" if result.played_card.kind == ACTION_FLASHBANG else "play",
                     start_pos=get_draw_pile_rect(screen.get_width(), screen.get_height()).center,
                     target_pos=get_discard_pile_rect(screen_rect).center,
                     start_rotation=0.0,
@@ -2875,10 +2964,13 @@ class PlayingScreen(BaseScreen):
 
     def _spawn_ai_animation(self, player_id: int, outcome: AITurnOutcome, screen: pygame.Surface, now_ms: int) -> None:
         if outcome.action_type == "play" and outcome.card is not None:
+            self._play_extension_card_sound(outcome.card.kind)
+            if outcome.card.kind == ACTION_FLASHBANG:
+                self._trigger_flashbang_visual()
             self._spawn_active_card(
                 card=outcome.card,
                 owner_id=player_id,
-                kind="play",
+                kind="play_flip" if outcome.card.kind == ACTION_FLASHBANG else "play",
                 start_pos=get_player_anchor_point(screen.get_rect(), player_id, self.game.num_players),
                 target_pos=get_discard_pile_rect(screen.get_rect()).center,
                 start_rotation=get_player_card_rotation(player_id, self.game.num_players),
@@ -2904,10 +2996,13 @@ class PlayingScreen(BaseScreen):
             return
 
         if outcome.action_type == "draw_played" and outcome.card is not None:
+            self._play_extension_card_sound(outcome.card.kind)
+            if outcome.card.kind == ACTION_FLASHBANG:
+                self._trigger_flashbang_visual()
             self._spawn_active_card(
                 card=outcome.card,
                 owner_id=player_id,
-                kind="play",
+                kind="play_flip" if outcome.card.kind == ACTION_FLASHBANG else "play",
                 start_pos=get_draw_pile_rect(screen.get_width(), screen.get_height()).center,
                 target_pos=get_discard_pile_rect(screen.get_rect()).center,
                 start_rotation=0.0,
@@ -2958,7 +3053,9 @@ class PlayingScreen(BaseScreen):
         card.target_rotation = target_rotation
         card.current_scale = 1.0
         card.target_scale = 1.0
-        duration = 0.24 if kind == "play" else 0.32
+        duration = 0.24 if kind in ("play", "play_flip") else 0.32
+        if kind == "play_flip":
+            duration = 0.38
         if kind == "draw" and owner_id != 0:
             duration = 0.28
         self.active_cards.append(
@@ -2992,7 +3089,7 @@ class PlayingScreen(BaseScreen):
                 active_card.card.current_pos = active_card.target_pos
                 active_card.card.current_rotation = active_card.target_rotation
                 active_card.card.current_scale = active_card.target_scale
-                if active_card.kind == "play":
+                if active_card.kind in ("play", "play_flip"):
                     self.display_top_card = active_card.card
                     if active_card.card.kind == ACTION_WILD_DRAW_FOUR:
                         self._trigger_screen_shake()
@@ -3036,6 +3133,20 @@ class PlayingScreen(BaseScreen):
                 card_img = pygame.transform.smoothscale(base_surface, (flip_width, 130))
             elif active_card.kind == "draw" and active_card.owner_id != 0:
                 card_img = self.atlas.get_back_surface(88, 130)
+            elif active_card.kind == "play_flip":
+                flip = active_card.flip_progress
+                if flip <= 0.0:
+                    card_img = self.atlas.get_back_surface(88, 130)
+                else:
+                    showing_front = flip >= 0.5
+                    base_surface = (
+                        self.atlas.get_card_surface(active_card.card, 88, 130)
+                        if showing_front
+                        else self.atlas.get_back_surface(88, 130)
+                    )
+                    flip_x = max(0.08, abs(0.5 - flip) * 2.0)
+                    flip_width = max(8, int(88 * flip_x))
+                    card_img = pygame.transform.smoothscale(base_surface, (flip_width, 130))
             else:
                 card_img = self.atlas.get_card_surface(active_card.card, 88, 130)
             card_img = transform_card_surface(card_img, active_card.current_rotation, active_card.current_scale)
@@ -3146,6 +3257,8 @@ class PlayingScreen(BaseScreen):
         hand = self.game.player_hands[0]
         if len(hand) < 15:
             return []
+        if self.game.is_player_flashbanged(0):
+            return list(range(min(len(hand), 10)))
         legal_indices = self.game.get_legal_card_indices(0)
         return legal_indices[:10]
 
@@ -3613,6 +3726,9 @@ class MultiplayerPlayingScreen(PlayingScreen):
 
         screen_rect = pygame.display.get_surface().get_rect() if pygame.display.get_surface() else pygame.Rect(0, 0, 1920, 1080)
         if played_card is not None and action in {"play", "draw_play"}:
+            self._play_extension_card_sound(played_card.kind)
+            if played_card.kind == ACTION_FLASHBANG:
+                self._trigger_flashbang_visual()
             start_pos = get_player_anchor_point(screen_rect, actor_id, self._base_game.num_players)
             source_card = played_card
             start_rotation = get_player_card_rotation(actor_id, self._base_game.num_players)
@@ -3632,7 +3748,7 @@ class MultiplayerPlayingScreen(PlayingScreen):
             self._spawn_active_card(
                 card=source_card,
                 owner_id=actor_id,
-                kind="play",
+                kind="play_flip" if played_card.kind == ACTION_FLASHBANG else "play",
                 start_pos=start_pos,
                 target_pos=get_discard_pile_rect(screen_rect).center,
                 start_rotation=start_rotation,

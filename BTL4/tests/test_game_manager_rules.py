@@ -1,6 +1,8 @@
 import unittest
 
 from scripts.cards import (
+    ACTION_FLASHBANG,
+    ACTION_MOM_MAY_CRY,
     ACTION_DRAW_TWO,
     ACTION_REVERSE,
     ACTION_SKIP,
@@ -9,6 +11,7 @@ from scripts.cards import (
     Card,
     sort_hand_cards,
 )
+from scripts.deck import build_deck_for_settings
 from scripts.game_manager import (
     GameSettings,
     PlayerAction,
@@ -28,6 +31,14 @@ def action(color: str, kind: str) -> Card:
 
 
 class UnoRuleSettingsTest(unittest.TestCase):
+    def test_mixi_pack_deck_contains_flashbang_cards(self) -> None:
+        deck = build_deck_for_settings(["mixi"])
+        flashbang_count = sum(1 for card in deck if card.kind == ACTION_FLASHBANG)
+        mom_may_cry_count = sum(1 for card in deck if card.kind == ACTION_MOM_MAY_CRY)
+
+        self.assertEqual(flashbang_count, 4)
+        self.assertEqual(mom_may_cry_count, 4)
+
     def make_game(self, settings: GameSettings) -> UnoGameManager:
         game = UnoGameManager(settings=settings, seed=1)
         game.draw_pile = [number("blue", value) for value in range(9)]
@@ -146,6 +157,22 @@ class UnoRuleSettingsTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.message, "You cannot win with that action card.")
         self.assertIsNone(game.winner)
+
+    def test_mixi_action_cards_cannot_be_winning_final_card(self) -> None:
+        for mixi_kind in (ACTION_FLASHBANG, ACTION_MOM_MAY_CRY):
+            with self.subTest(kind=mixi_kind):
+                game = self.make_game(GameSettings(num_players=2))
+                game.player_hands = [
+                    [Card(color=None, kind=mixi_kind)],
+                    [number("blue", 3)],
+                ]
+
+                result = game.submit_action(
+                    PlayerAction(player_id=0, action_type="play", card_index=0, chosen_color="red")
+                )
+
+                self.assertFalse(result.ok)
+                self.assertEqual(result.message, "You cannot win with that action card.")
 
     def test_draw_two_stack_allows_wild_draw_four(self) -> None:
         game = self.make_game(GameSettings(num_players=2))
@@ -272,6 +299,73 @@ class UnoRuleSettingsTest(unittest.TestCase):
         self.assertFalse(game.call_uno(0).ok)
         self.assertFalse(game.can_call_uno(1))
         self.assertFalse(game.call_uno(1).ok)
+
+    def test_mom_may_cry_keeps_seven_random_cards_and_returns_rest_to_draw_pile(self) -> None:
+        game = self.make_game(GameSettings(num_players=2))
+        game.player_hands = [
+            [Card(color=None, kind=ACTION_MOM_MAY_CRY)] + [number("red", value) for value in range(1, 9)],
+            [number("blue", 3)],
+        ]
+        original_draw_len = len(game.draw_pile)
+
+        result = game.submit_action(
+            PlayerAction(player_id=0, action_type="play", card_index=0, chosen_color="red")
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(len(game.player_hands[0]), 7)
+        self.assertEqual(len(game.draw_pile), original_draw_len + 1)
+        self.assertNotIn(ACTION_MOM_MAY_CRY, [card.kind for card in game.player_hands[0]])
+
+    def test_flashbang_allows_drawing_even_with_legal_move(self) -> None:
+        game = self.make_game(GameSettings(num_players=2))
+        game.player_hands = [
+            [number("red", 4), number("blue", 1)],
+            [number("yellow", 3)],
+        ]
+        game.flashbang_remaining = {0: 1}
+        game.active_flashbang_player = 0
+
+        result = game.submit_action(PlayerAction(player_id=0, action_type="draw"))
+
+        self.assertTrue(result.ok)
+        self.assertIsNotNone(result.drew_card)
+
+    def test_non_flashbanged_player_cannot_draw_with_legal_move(self) -> None:
+        game = self.make_game(GameSettings(num_players=2))
+        game.player_hands = [
+            [number("red", 4), number("blue", 1)],
+            [number("yellow", 3)],
+        ]
+
+        result = game.submit_action(PlayerAction(player_id=0, action_type="draw"))
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.message, "You can play a card; draw only when you have no legal move.")
+
+    def test_flashbang_marks_future_turns_for_all_players(self) -> None:
+        game = self.make_game(GameSettings(num_players=3))
+        game.player_hands = [
+            [Card(color=None, kind=ACTION_FLASHBANG), number("red", 2)],
+            [number("yellow", 3)],
+            [number("blue", 4)],
+        ]
+
+        result = game.submit_action(
+            PlayerAction(player_id=0, action_type="play", card_index=0, chosen_color="red")
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(game.flashbang_remaining, {0: 1, 1: 2, 2: 2})
+        self.assertEqual(game.current_player, 1)
+        self.assertTrue(game.is_player_flashbanged(1))
+
+        second_result = game.submit_action(PlayerAction(player_id=1, action_type="draw"))
+
+        self.assertTrue(second_result.ok)
+        self.assertEqual(game.flashbang_remaining, {0: 1, 1: 1, 2: 2})
+        self.assertEqual(game.current_player, 2)
+        self.assertTrue(game.is_player_flashbanged(2))
 
     def test_call_uno_rejects_player_outside_current_turn(self) -> None:
         game = self.make_game(GameSettings(num_players=2))

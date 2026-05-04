@@ -5,8 +5,10 @@ import pygame
 
 from scripts.cards import (
     ACTION_COUNTER,
+    ACTION_FLASHBANG,
     ACTION_DRAW_67,
     ACTION_DRAW_TWO,
+    ACTION_MOM_MAY_CRY,
     ACTION_REVERSE,
     ACTION_SILENCE,
     ACTION_SKIP,
@@ -15,11 +17,15 @@ from scripts.cards import (
     Card,
 )
 
-MIXI_CARD_KINDS: frozenset = frozenset({ACTION_COUNTER, ACTION_SILENCE, ACTION_DRAW_67})
+MIXI_CARD_KINDS: frozenset = frozenset(
+    {ACTION_COUNTER, ACTION_SILENCE, ACTION_DRAW_67, ACTION_FLASHBANG, ACTION_MOM_MAY_CRY}
+)
 MIXI_IMAGE_FILES: Dict[str, str] = {
     ACTION_COUNTER: "counter.png",
     ACTION_SILENCE: "silence.jpg",
     ACTION_DRAW_67: "draw67.jpg",
+    ACTION_FLASHBANG: "flashbang.webp",
+    ACTION_MOM_MAY_CRY: "mom_may_cry.png",
 }
 
 
@@ -45,12 +51,24 @@ class CardSpriteAtlas:
         self.cache: Dict[Tuple[str, int, int], pygame.Surface] = {}
         self._mixi_surfaces: Dict[str, pygame.Surface] = {}
         for kind, filename in MIXI_IMAGE_FILES.items():
-            path = sprite_sheet_path.parent / filename
+            path = self._resolve_mixi_image_path(sprite_sheet_path.parent, filename)
             if path.exists():
                 try:
                     self._mixi_surfaces[kind] = pygame.image.load(str(path)).convert_alpha()
                 except pygame.error:
                     pass
+
+    @staticmethod
+    def _resolve_mixi_image_path(base_dir: Path, filename: str) -> Path:
+        direct = base_dir / filename
+        if direct.exists():
+            return direct
+
+        stem = Path(filename).stem.lower()
+        for candidate in sorted(base_dir.glob(f"{stem}.*")):
+            if candidate.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+                return candidate
+        return direct
 
     def _src_rect(self, row: int, col: int) -> pygame.Rect:
         return pygame.Rect(

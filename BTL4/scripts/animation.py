@@ -73,12 +73,21 @@ class ActiveCard:
             return 1.0
         return max(0.0, min(1.0, self.elapsed / self.duration))
 
+    @property
+    def flip_progress(self) -> float:
+        if self.kind != "play_flip":
+            return self.progress
+        if self.progress <= 0.72:
+            return 0.0
+        return max(0.0, min(1.0, (self.progress - 0.72) / 0.28))
+
     def update(self, dt: float) -> bool:
-        if self.kind in ("play", "draw"):
+        if self.kind in ("play", "draw", "play_flip"):
             self.elapsed += max(0.0, dt)
             t = self.progress
+            move_phase = t if self.kind != "play_flip" else min(1.0, t / 0.72)
             # Ease out quickly so played cards feel snappier and more responsive.
-            move_t = 1.0 - pow(1.0 - t, 3)
+            move_t = 1.0 - pow(1.0 - move_phase, 3)
 
             assert self.start_pos is not None
             assert self.start_rotation is not None
@@ -86,7 +95,7 @@ class ActiveCard:
             self.current_pos = lerp_point(self.start_pos, self.target_pos, move_t)
             self.current_rotation = lerp(self.start_rotation, self.target_rotation, move_t)
 
-            if self.kind == "play":
+            if self.kind in ("play", "play_flip"):
                 pop = 0.16 * math.sin(math.pi * t)
                 self.current_scale = lerp(self.start_scale, self.target_scale, move_t) + pop
             else:

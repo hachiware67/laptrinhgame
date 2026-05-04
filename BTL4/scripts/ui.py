@@ -57,6 +57,13 @@ UNO_YELLOW = (245, 205, 65)
 UNO_GREEN = (65, 175, 95)
 UNO_BLUE = (70, 130, 225)
 TEXT_LIGHT = (238, 244, 248)
+_EXTENSION_TOOLTIPS: dict[str, tuple[str, list[str]]] = {
+    "draw67":      ("Mixi Airstrike",      ["+67.", "Only Mixi Airstrikes stack with each other, and cannot be countered."]),
+    "counter":     ("Mixi Counter",        ["Dogs will pay.", "Playable only when a +2 or +4 penalty is active."]),
+    "silence":     ("Faker's Silence",     ["The next player will feel Faker's aura (skipped for 3 turns)."]),
+    "mom_may_cry": ("Mom Physics May Cry", ["Cuts your hand down to 7 random cards and shuffles the rest back into the draw pile."]),
+    "flashbang":   ("Mixi Smile",          ["Flashbangs everyone: your next turn is face-down once, every other player is face-down twice."]),
+}
 WILD_WHEEL_SEGMENTS = (
     ("red", 180.0, 270.0),
     ("blue", 270.0, 360.0),
@@ -854,6 +861,58 @@ def _draw_hud_glass_panel(screen: pygame.Surface, rect: pygame.Rect, alpha: int 
     screen.blit(glass, rect)
 
 
+def draw_card_tooltip(screen: pygame.Surface, card: Card, hovered_rect: pygame.Rect) -> None:
+    entry = _EXTENSION_TOOLTIPS.get(card.kind)
+    if entry is None:
+        return
+    title, bullets = entry
+
+    font_title = pygame.font.SysFont("Arial", 15, bold=True)
+    font_body = pygame.font.SysFont("Arial", 13)
+    PAD = 10
+    LINE_GAP = 4
+    MAX_WIDTH = 280
+
+    def _wrap(text: str, font: pygame.font.Font, max_w: int) -> list[str]:
+        words = text.split()
+        lines: list[str] = []
+        cur = ""
+        for w in words:
+            test = (cur + " " + w).strip()
+            if font.size(test)[0] <= max_w:
+                cur = test
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
+        return lines
+
+    title_surf = font_title.render(title, True, (255, 220, 80))
+    body_surfs: list[pygame.Surface] = []
+    for bullet in bullets:
+        for line in _wrap("• " + bullet, font_body, MAX_WIDTH - PAD * 2):
+            body_surfs.append(font_body.render(line, True, (220, 220, 220)))
+
+    total_h = PAD + title_surf.get_height() + LINE_GAP
+    for s in body_surfs:
+        total_h += s.get_height() + 2
+    total_h += PAD
+
+    box_x = max(4, min(hovered_rect.centerx - MAX_WIDTH // 2, screen.get_width() - MAX_WIDTH - 4))
+    box_y = hovered_rect.top - total_h - 8
+    tooltip_rect = pygame.Rect(box_x, box_y, MAX_WIDTH, total_h)
+    _draw_hud_glass_panel(screen, tooltip_rect, alpha=210)
+
+    y = box_y + PAD
+    screen.blit(title_surf, (box_x + PAD, y))
+    y += title_surf.get_height() + LINE_GAP
+    for s in body_surfs:
+        screen.blit(s, (box_x + PAD, y))
+        y += s.get_height() + 2
+
+
 def render_ui(
     screen: pygame.Surface,
     game: UnoGameManager,
@@ -864,6 +923,7 @@ def render_ui(
     hovered_index: int | None = None,
     wild_color_picker_active: bool = False,
     hidden_card_ids: set[int] | None = None,
+    facedown_card_ids: set[int] | None = None,
     display_top_card: Card | None = None,
     direction_arrow_angle: float = 0.0,
     wild_hovered_color: str | None = None,
@@ -877,6 +937,7 @@ def render_ui(
     _draw_table_background(screen)
 
     hidden_card_ids = hidden_card_ids or set()
+    facedown_card_ids = facedown_card_ids or set()
     footer_height = _clamp(int(height * 0.045), 34, 48)
 
     title_font = _scaled_font(width, height, 32, bold=True)
@@ -1022,7 +1083,10 @@ def render_ui(
             continue
         is_hovered = i == hovered_index
         rect = get_card_rect_from_pos(card)
-        card_img = atlas.get_card_surface(card, rect.width, rect.height)
+        if id(card) in facedown_card_ids:
+            card_img = atlas.get_back_surface(rect.width, rect.height)
+        else:
+            card_img = atlas.get_card_surface(card, rect.width, rect.height)
         card_img = transform_card_surface(card_img, getattr(card, "current_rotation", 0.0), getattr(card, "current_scale", 1.0))
         _blit_card_shadow(
             screen,

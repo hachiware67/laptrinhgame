@@ -4,6 +4,8 @@ from scripts.cards import (
     ACTION_COUNTER,
     ACTION_DRAW_67,
     ACTION_DRAW_TWO,
+    ACTION_FLASHBANG,
+    ACTION_MOM_MAY_CRY,
     ACTION_REVERSE,
     ACTION_SILENCE,
     ACTION_SKIP,
@@ -40,7 +42,13 @@ def build_standard_uno_deck() -> List[Card]:
 def build_mixi_extension_pack() -> List[Card]:
     """Returns 12 Mixi pack cards: 4 × Dogs Will Pay, 4 × Faker's Silence, 4 × Mixi Airstrike."""
     cards: List[Card] = []
-    for kind in (ACTION_COUNTER, ACTION_SILENCE, ACTION_DRAW_67):
+    for kind in (
+        ACTION_COUNTER,
+        ACTION_SILENCE,
+        ACTION_DRAW_67,
+        ACTION_FLASHBANG,
+        ACTION_MOM_MAY_CRY,
+    ):
         for _ in range(4):
             cards.append(Card(color=None, kind=kind))
     return cards

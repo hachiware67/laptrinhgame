@@ -18,6 +18,17 @@ ACTION_WILD_DRAW_FOUR = "wild_draw4"
 ACTION_COUNTER = "counter"
 ACTION_SILENCE = "silence"
 ACTION_DRAW_67 = "draw67"
+ACTION_FLASHBANG = "flashbang"
+ACTION_MOM_MAY_CRY = "mom_may_cry"
+NONE_TYPE_ACTIONS = frozenset(
+    {
+        ACTION_COUNTER,
+        ACTION_SILENCE,
+        ACTION_DRAW_67,
+        ACTION_FLASHBANG,
+        ACTION_MOM_MAY_CRY,
+    }
+)
 
 ACTION_ORDER = {
     ACTION_SKIP: 0,
@@ -41,7 +52,11 @@ class Card:
 
     @property
     def is_wild(self) -> bool:
-        return self.kind in (ACTION_WILD, ACTION_WILD_DRAW_FOUR, ACTION_SILENCE, ACTION_DRAW_67)
+        return self.kind in (ACTION_WILD, ACTION_WILD_DRAW_FOUR)
+
+    @property
+    def is_none_type(self) -> bool:
+        return self.kind in NONE_TYPE_ACTIONS
 
     @property
     def short_label(self) -> str:
@@ -61,6 +76,10 @@ class Card:
             return "SIL"
         if self.kind == ACTION_DRAW_67:
             return "+67"
+        if self.kind == ACTION_FLASHBANG:
+            return "FB"
+        if self.kind == ACTION_MOM_MAY_CRY:
+            return "7!"
         return "+4"
 
 
@@ -68,7 +87,7 @@ def sort_hand_cards(cards: list[Card]) -> None:
     """Sort a hand so wild cards stay left and colors are grouped consistently."""
 
     def sort_key(card: Card) -> tuple[int, int, int, int, int]:
-        if card.is_wild:
+        if card.is_wild or card.is_none_type:
             return (0, 0, 0, 0, 0)
 
         color_rank = HAND_COLOR_ORDER.get(card.color or "", len(HAND_COLOR_ORDER))
