@@ -1150,13 +1150,22 @@ def get_title_screen_button_rects(screen_rect: pygame.Rect) -> dict[str, pygame.
     button_w = _clamp(int(320 * scale), 280, 320)
     button_h = _clamp(int(90 * scale), 68, 90)
     gap = _clamp(int(28 * scale), 16, 28)
+    button_order = ("start_local", "multiplayer", "instructions", "settings", "quit")
     y_start = screen_rect.centery + _clamp(int(screen_rect.height * 0.015), 8, 24)
+    stack_height = len(button_order) * button_h + (len(button_order) - 1) * gap
+    bottom_margin = _clamp(int(screen_rect.height * 0.075), 56, 110)
+    bottom_limit = screen_rect.bottom - bottom_margin
+    if y_start + stack_height > bottom_limit:
+        y_start = bottom_limit - stack_height
 
     return {
-        "start_local": pygame.Rect(screen_rect.centerx - button_w // 2, y_start, button_w, button_h),
-        "multiplayer": pygame.Rect(screen_rect.centerx - button_w // 2, y_start + button_h + gap, button_w, button_h),
-        "settings": pygame.Rect(screen_rect.centerx - button_w // 2, y_start + 2 * (button_h + gap), button_w, button_h),
-        "quit": pygame.Rect(screen_rect.centerx - button_w // 2, y_start + 3 * (button_h + gap), button_w, button_h),
+        name: pygame.Rect(
+            screen_rect.centerx - button_w // 2,
+            y_start + idx * (button_h + gap),
+            button_w,
+            button_h,
+        )
+        for idx, name in enumerate(button_order)
     }
 
 
@@ -1166,14 +1175,16 @@ def render_title_screen(screen: pygame.Surface) -> None:
     draw_theme_background(screen)
 
     title_font = _scaled_font(width, height, 92, bold=True)
-    title = title_font.render("UNO Online", True, TEXT_LIGHT)
-    title_shadow = title_font.render("UNO Online", True, (0, 0, 0))
-    screen.blit(title_shadow, title_shadow.get_rect(center=(width // 2 + 4, height // 2 - 180 + 5)))
-    screen.blit(title, title.get_rect(center=(width // 2, height // 2 - 180)))
+    title = title_font.render("UNO Tay`", True, TEXT_LIGHT)
+    title_shadow = title_font.render("UNO Tay`", True, (0, 0, 0))
+    title_y = max(18, int(height * 0.035))
+    screen.blit(title_shadow, title_shadow.get_rect(midtop=(width // 2 + 4, title_y + 5)))
+    screen.blit(title, title.get_rect(midtop=(width // 2, title_y)))
 
     subtitle_font = _scaled_font(width, height, 34)
-    subtitle = subtitle_font.render("Custom Game with Module 2-4 Rules", True, (218, 226, 232))
-    screen.blit(subtitle, subtitle.get_rect(center=(width // 2, height // 2 - 100)))
+    subtitle = subtitle_font.render("An UNO game inspired by Domixi", True, (218, 226, 232))
+    subtitle_rect = subtitle.get_rect(midtop=(width // 2, title_y + title.get_height() + 6))
+    screen.blit(subtitle, subtitle_rect)
 
     screen_rect = screen.get_rect()
     button_rects = get_title_screen_button_rects(screen_rect)
@@ -1184,6 +1195,7 @@ def render_title_screen(screen: pygame.Surface) -> None:
 
     _draw_button(screen, button_rects["start_local"], "Start Local Match", UNO_GREEN, border=(160, 235, 172))
     _draw_button(screen, button_rects["multiplayer"], "Multiplayer", UNO_BLUE, border=(160, 195, 245))
+    _draw_button(screen, button_rects["instructions"], "Instructions", (233, 126, 68), border=(255, 184, 128))
     _draw_button(screen, button_rects["settings"], "Settings", UNO_YELLOW, border=(255, 236, 145))
     _draw_button(screen, button_rects["quit"], "Quit", UNO_RED, border=(246, 166, 166))
 

@@ -227,6 +227,10 @@ class TitleScreen(BaseScreen):
                             return ScreenResult(
                                 next_screen=GameSettingsScreen(self.atlas, self.audio_settings)
                             )
+                        if button_name == "instructions":
+                            return ScreenResult(
+                                next_screen=InstructionsScreen(self.atlas, self.audio_settings)
+                            )
                         if button_name == "settings":
                             return ScreenResult(
                                 next_screen=MainSettingsScreen(self.atlas, self.audio_settings)
@@ -243,6 +247,276 @@ class TitleScreen(BaseScreen):
 
     def draw(self, screen: pygame.Surface, now_ms: int) -> None:
         render_title_screen(screen)
+
+
+class InstructionsScreen(BaseScreen):
+    state_name = "instructions"
+    TAB_CORE = "core"
+    TAB_CARDS = "cards"
+    TAB_RULES = "rules"
+    TAB_EXTENSION = "extensions"
+    TABS = (
+        (TAB_CORE, "Core Gameplay"),
+        (TAB_CARDS, "Card Types"),
+        (TAB_RULES, "House Rules"),
+        (TAB_EXTENSION, "Extension Pack"),
+    )
+
+    def __init__(self, atlas: CardSpriteAtlas, audio_settings: AudioSettings) -> None:
+        self.atlas = atlas
+        self.audio_settings = audio_settings
+        self.active_tab = self.TAB_CORE
+
+    def handle_events(
+        self,
+        events: list[pygame.event.Event],
+        screen: pygame.Surface,
+        now_ms: int,
+    ) -> ScreenResult:
+        screen_rect = screen.get_rect()
+        panel = self._panel_rect(screen_rect)
+        tab_rects = self._tab_rects(panel)
+        back_rect = self._back_button_rect(panel)
+
+        for event in events:
+            if event.type == pygame.QUIT:
+                return ScreenResult(running=False)
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                return ScreenResult(next_screen=TitleScreen(self.atlas, self.audio_settings))
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mouse_pos = event.pos
+                for tab_key, rect in tab_rects.items():
+                    if rect.collidepoint(mouse_pos):
+                        self.active_tab = tab_key
+                        break
+                if back_rect.collidepoint(mouse_pos):
+                    return ScreenResult(next_screen=TitleScreen(self.atlas, self.audio_settings))
+
+        return ScreenResult()
+
+    def draw(self, screen: pygame.Surface, now_ms: int) -> None:
+        draw_theme_background(screen)
+        screen_rect = screen.get_rect()
+
+        title_font = theme_font(screen_rect.width, screen_rect.height, 72, bold=True)
+        section_font = theme_font(screen_rect.width, screen_rect.height, 30, bold=True)
+        body_font = theme_font(screen_rect.width, screen_rect.height, 24)
+
+        title_y = max(18, int(screen_rect.height * 0.032))
+        title = title_font.render("INSTRUCTIONS", True, (255, 255, 255))
+        screen.blit(title, title.get_rect(midtop=(screen_rect.centerx, title_y)))
+
+        panel = self._panel_rect(screen_rect)
+        draw_theme_panel(screen, panel, alpha=150)
+
+        tab_rects = self._tab_rects(panel)
+        for tab_key, label in self.TABS:
+            rect = tab_rects[tab_key]
+            is_active = tab_key == self.active_tab
+            fill = SETTINGS_ACTIVE_FILL if is_active else SETTINGS_IDLE_FILL
+            border = SETTINGS_ACTIVE_BORDER if is_active else SETTINGS_IDLE_BORDER
+            draw_theme_button(screen, rect, label, fill, border, selected=is_active, font_size=22)
+
+        content_rect = self._content_rect(panel, tab_rects)
+        self._draw_tab_content(screen, content_rect, section_font, body_font)
+
+        back_rect = self._back_button_rect(panel)
+        draw_theme_button(
+            screen,
+            back_rect,
+            "Back",
+            SETTINGS_DANGER_FILL,
+            SETTINGS_DANGER_BORDER,
+            font_size=26,
+        )
+
+    @staticmethod
+    def _panel_rect(screen_rect: pygame.Rect) -> pygame.Rect:
+        panel = pygame.Rect(0, 0, min(1180, screen_rect.width - 96), screen_rect.height - 170)
+        panel.center = (screen_rect.centerx, screen_rect.centery + 38)
+        return panel
+
+    @classmethod
+    def _tab_rects(cls, panel: pygame.Rect) -> dict[str, pygame.Rect]:
+        gap = 12
+        tab_h = 50
+        padding = 36
+        available_w = panel.width - padding * 2
+        tab_w = max(160, (available_w - gap * (len(cls.TABS) - 1)) // len(cls.TABS))
+        start_x = panel.x + padding + (available_w - (tab_w * len(cls.TABS) + gap * (len(cls.TABS) - 1))) // 2
+        y = panel.y + 22
+        rects: dict[str, pygame.Rect] = {}
+        for idx, (tab_key, _) in enumerate(cls.TABS):
+            rects[tab_key] = pygame.Rect(start_x + idx * (tab_w + gap), y, tab_w, tab_h)
+        return rects
+
+    @staticmethod
+    def _content_rect(panel: pygame.Rect, tab_rects: dict[str, pygame.Rect]) -> pygame.Rect:
+        tabs_bottom = max(rect.bottom for rect in tab_rects.values())
+        content_top = tabs_bottom + 24
+        content_bottom = panel.bottom - 88
+        return pygame.Rect(panel.x + 48, content_top, panel.width - 96, max(0, content_bottom - content_top))
+
+    @staticmethod
+    def _back_button_rect(panel: pygame.Rect) -> pygame.Rect:
+        button_w = 240
+        button_h = 56
+        return pygame.Rect(
+            panel.centerx - button_w // 2,
+            panel.bottom - button_h - 20,
+            button_w,
+            button_h,
+        )
+
+    @staticmethod
+    def _wrap_text(
+        text: str,
+        font: pygame.font.Font,
+        max_width: int,
+        indent_after_first: int = 0,
+    ) -> list[str]:
+        if max_width <= 0:
+            return [text]
+
+        words = text.split()
+        if not words:
+            return [""]
+
+        lines: list[str] = []
+        current = words[0]
+        for word in words[1:]:
+            test = f"{current} {word}"
+            if font.size(test)[0] <= max_width:
+                current = test
+            else:
+                lines.append(current)
+                current = (" " * indent_after_first) + word if indent_after_first else word
+        lines.append(current)
+        return lines
+
+    def _draw_tab_content(
+        self,
+        screen: pygame.Surface,
+        rect: pygame.Rect,
+        section_font: pygame.font.Font,
+        body_font: pygame.font.Font,
+    ) -> None:
+        content = self._tab_content(self.active_tab)
+        y = rect.top
+        for section_title, bullets in content:
+            header = section_font.render(section_title, True, (242, 246, 250))
+            screen.blit(header, (rect.x, y))
+            y += header.get_height() + 10
+            for bullet in bullets:
+                wrapped = self._wrap_text(f"- {bullet}", body_font, rect.width, indent_after_first=2)
+                for line in wrapped:
+                    if y > rect.bottom - body_font.get_height():
+                        return
+                    line_surface = body_font.render(line, True, (224, 232, 240))
+                    screen.blit(line_surface, (rect.x + 6, y))
+                    y += line_surface.get_height() + 6
+            y += 12
+
+    @classmethod
+    def _tab_content(cls, tab_key: str) -> list[tuple[str, list[str]]]:
+        if tab_key == cls.TAB_CARDS:
+            return [
+                (
+                    "Normal Numbers",
+                    [
+                        "Match the current color or number to play.",
+                        "Zero, seven, and eight can trigger house rules when enabled.",
+                    ],
+                ),
+                (
+                    "Action Cards",
+                    [
+                        "Skip, Reverse, and +2 change the turn flow or start draw penalties.",
+                        "Action cards cannot be your final card.",
+                    ],
+                ),
+                (
+                    "Wild Cards",
+                    [
+                        "Wild and +4 can be played on any color and let you choose a new color.",
+                    ],
+                ),
+                (
+                    "None Types",
+                    [
+                        "Used by the extension pack.",
+                        "Playable like wild cards, but they keep the current color instead of changing it.",
+                    ],
+                ),
+            ]
+
+        if tab_key == cls.TAB_RULES:
+            return [
+                (
+                    "Rule of 0",
+                    ["Playing a 0 lets you choose the direction to pass all hands."],
+                ),
+                (
+                    "Rule of 7",
+                    ["Playing a 7 lets you swap hands with a target player."],
+                ),
+                (
+                    "Rule of 8",
+                    [
+                        "Playing an 8 starts a reaction window.",
+                        "Everyone must react in time; if all react, the last to react draws 2.",
+                        "Anyone who fails to react draws 2 instead.",
+                    ],
+                ),
+                (
+                    "No Win With Action Card",
+                    ["You cannot finish the game on Skip, Reverse, +2, Wild, +4, or Mixi action cards."],
+                ),
+                (
+                    "+2 / +4 Stacking",
+                    [
+                        "You can stack +2 or +4 on an active draw penalty.",
+                        "If a +4 starts the stack, only +4 cards can be added.",
+                    ],
+                ),
+            ]
+
+        if tab_key == cls.TAB_EXTENSION:
+            return [
+                (
+                    "Mixi Airstrike (+67)",
+                    ["Starts a draw-67 penalty for the next player.", "Stacking rules apply."],
+                ),
+                (
+                    "Mixi Counter (Dogs Will Pay)",
+                    [
+                        "Playable only when a +2 or +4 penalty is active.",
+                        "Cancels the stack and makes the penalty source draw the cards.",
+                    ],
+                ),
+                (
+                    "Faker Silence",
+                    ["Silences the next player for 3 turns (they are skipped)."],
+                ),
+            ]
+
+        return [
+            (
+                "Core Gameplay",
+                [
+                    "Match a card by color or number; wilds can be played anytime.",
+                    "If you have no legal move, draw one card. If it is playable, it auto-plays.",
+                    "Call UNO when you are down to one card to avoid penalties.",
+                ],
+            ),
+            (
+                "Turns and Flow",
+                [
+                    "Action cards change direction, skip players, or apply draw penalties.",
+                    "The game ends when a player empties their hand.",
+                ],
+            ),
+        ]
 
 
 class MultiplayerScreen(BaseScreen):
