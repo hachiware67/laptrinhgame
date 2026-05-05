@@ -2,6 +2,7 @@ import random
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, Any
 
 import pygame
@@ -217,6 +218,10 @@ class BaseScreen:
     def wants_bgm(self) -> bool:
         return False
 
+    @property
+    def bgm_track(self) -> Path | None:
+        return None
+
 
 class TitleScreen(BaseScreen):
     state_name = STATE_TITLE
@@ -233,6 +238,8 @@ class TitleScreen(BaseScreen):
     ) -> ScreenResult:
         for event in events:
             if event.type == pygame.QUIT:
+                return ScreenResult(running=False)
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 return ScreenResult(running=False)
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -263,6 +270,14 @@ class TitleScreen(BaseScreen):
 
     def draw(self, screen: pygame.Surface, now_ms: int) -> None:
         render_title_screen(screen)
+
+    @property
+    def wants_bgm(self) -> bool:
+        return True
+
+    @property
+    def bgm_track(self) -> Path | None:
+        return asset_path("bgm", "mainmenu.mp3")
 
 
 class InstructionsScreen(BaseScreen):
@@ -345,6 +360,14 @@ class InstructionsScreen(BaseScreen):
             SETTINGS_DANGER_BORDER,
             font_size=26,
         )
+
+    @property
+    def wants_bgm(self) -> bool:
+        return True
+
+    @property
+    def bgm_track(self) -> Path | None:
+        return asset_path("bgm", "mainmenu.mp3")
 
     @staticmethod
     def _panel_rect(screen_rect: pygame.Rect) -> pygame.Rect:
@@ -664,6 +687,14 @@ class MultiplayerScreen(BaseScreen):
             self._draw_create_form(screen, panel, section_font, body_font, small_font)
         else:
             self._draw_room_view(screen, panel, section_font, body_font, small_font)
+
+    @property
+    def wants_bgm(self) -> bool:
+        return True
+
+    @property
+    def bgm_track(self) -> Path | None:
+        return asset_path("bgm", "mainmenu.mp3")
 
     def _draw_lobby(
         self,
@@ -1611,6 +1642,14 @@ class GameSettingsScreen(BaseScreen):
             footer_y = button_rects["back"].top - 18
             screen.blit(footer, footer.get_rect(midbottom=(screen_rect.centerx, footer_y)))
 
+    @property
+    def wants_bgm(self) -> bool:
+        return True
+
+    @property
+    def bgm_track(self) -> Path | None:
+        return asset_path("bgm", "mainmenu.mp3")
+
 
 class ExtensionPackScreen(BaseScreen):
     """Screen for selecting extension packs, shown between GameSettingsScreen and game start."""
@@ -1779,6 +1818,14 @@ class ExtensionPackScreen(BaseScreen):
             footer_y = button_rects["back"].top - 18
             screen.blit(footer, footer.get_rect(midbottom=(screen_rect.centerx, footer_y)))
 
+    @property
+    def wants_bgm(self) -> bool:
+        return True
+
+    @property
+    def bgm_track(self) -> Path | None:
+        return asset_path("bgm", "mainmenu.mp3")
+
 
 class MainSettingsScreen(BaseScreen):
     state_name = "main_settings"
@@ -1934,6 +1981,14 @@ class MainSettingsScreen(BaseScreen):
         back_rect = self._button_rects(screen_rect)["back"]
         self._draw_button(screen, back_rect, "BACK", SETTINGS_DANGER_FILL, SETTINGS_DANGER_BORDER)
 
+    @property
+    def wants_bgm(self) -> bool:
+        return True
+
+    @property
+    def bgm_track(self) -> Path | None:
+        return asset_path("bgm", "mainmenu.mp3")
+
 
 class PlayingScreen(BaseScreen):
     state_name = STATE_PLAYING
@@ -2003,6 +2058,10 @@ class PlayingScreen(BaseScreen):
     @property
     def wants_bgm(self) -> bool:
         return True
+
+    @property
+    def bgm_track(self) -> Path | None:
+        return asset_path("bgm", "domixi tay bac.mp3")
 
     def handle_events(
         self,

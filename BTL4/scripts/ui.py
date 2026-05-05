@@ -48,6 +48,7 @@ DIRECTION_ICON_PATH = (
     )
 )
 LILITA_FONT_PATH = asset_path("enhance", "Lilita_One", "LilitaOne-Regular.ttf")
+MENU_DECOR_ATLAS_PATH = asset_path("sprites", "atlas_debug_overlay_snug.png")
 BACKGROUND_DARK = (10, 18, 28)
 FELT_GREEN = (18, 96, 72)
 DARK_PANEL = (18, 24, 34)
@@ -125,6 +126,26 @@ def _hud_panel_scaled(width: int, height: int) -> pygame.Surface | None:
 @lru_cache(maxsize=1)
 def _direction_arrow_icon() -> pygame.Surface | None:
     return _safe_load_image(DIRECTION_ICON_PATH)
+
+
+@lru_cache(maxsize=1)
+def _menu_decor_atlas() -> pygame.Surface | None:
+    return _safe_load_image(MENU_DECOR_ATLAS_PATH)
+
+
+@lru_cache(maxsize=64)
+def _menu_decor_card_surface(width: int, height: int, row: int, col: int) -> pygame.Surface | None:
+    atlas = _menu_decor_atlas()
+    if atlas is None:
+        return None
+    src = pygame.Rect(
+        CardSpriteAtlas.X_POSITIONS[col],
+        CardSpriteAtlas.Y_POSITIONS[row],
+        CardSpriteAtlas.X_WIDTHS[col],
+        CardSpriteAtlas.Y_HEIGHTS[row],
+    )
+    card = atlas.subsurface(src).copy()
+    return pygame.transform.smoothscale(card, (width, height))
 
 
 @lru_cache(maxsize=128)
@@ -674,13 +695,20 @@ def theme_font(width: int, height: int, size: int, bold: bool = False) -> pygame
 @lru_cache(maxsize=8)
 def _menu_background(width: int, height: int) -> pygame.Surface:
     surface = pygame.Surface((width, height))
-    surface.fill(BACKGROUND_DARK)
+    surface.fill((6, 14, 22))
 
-    top_band = pygame.Surface((width, max(1, height // 3)), pygame.SRCALPHA)
-    top_band.fill((18, 30, 44, 86))
-    surface.blit(top_band, (0, 0))
+    texture = _table_texture_scaled(width, height)
+    if texture is not None:
+        texture = texture.copy()
+        texture.set_alpha(28)
+        surface.blit(texture, (0, 0))
+    else:
+        noise = _felt_noise(width, height).copy()
+        noise.set_alpha(32)
+        surface.blit(noise, (0, 0))
 
-    vignette = _vignette_overlay(width, height)
+    vignette = _vignette_overlay(width, height).copy()
+    vignette.fill((255, 255, 255, 160), special_flags=pygame.BLEND_RGBA_MULT)
     surface.blit(vignette, (0, 0))
     return surface
 
@@ -1215,7 +1243,7 @@ def get_title_screen_button_rects(screen_rect: pygame.Rect) -> dict[str, pygame.
     button_h = _clamp(int(90 * scale), 68, 90)
     gap = _clamp(int(28 * scale), 16, 28)
     button_order = ("start_local", "multiplayer", "instructions", "settings", "quit")
-    y_start = screen_rect.centery + _clamp(int(screen_rect.height * 0.015), 8, 24)
+    y_start = screen_rect.centery - _clamp(int(screen_rect.height * 0.035), 28, 54)
     stack_height = len(button_order) * button_h + (len(button_order) - 1) * gap
     bottom_margin = _clamp(int(screen_rect.height * 0.075), 56, 110)
     bottom_limit = screen_rect.bottom - bottom_margin
@@ -1233,10 +1261,41 @@ def get_title_screen_button_rects(screen_rect: pygame.Rect) -> dict[str, pygame.
     }
 
 
+def _draw_menu_decor_card(
+    screen: pygame.Surface,
+    center: tuple[int, int],
+    angle: float,
+    atlas_row: int,
+    atlas_col: int,
+    scale_mul: float = 1.0,
+) -> None:
+    width, height = screen.get_size()
+    scale = _ui_scale(width, height) * scale_mul
+    card_w = _clamp(int(92 * scale), 58, 110)
+    card_h = _clamp(int(136 * scale), 88, 160)
+    card = _menu_decor_card_surface(card_w, card_h, atlas_row, atlas_col)
+    if card is None:
+        return
+
+    _blit_card_shadow(screen, center, (card_w, card_h), alpha=65, y_offset=8, spread=0.7)
+    rotated = pygame.transform.rotate(card, angle)
+    screen.blit(rotated, rotated.get_rect(center=center))
+
+
 def render_title_screen(screen: pygame.Surface) -> None:
     """Render the main title screen."""
     width, height = screen.get_size()
     draw_theme_background(screen)
+
+    glow = pygame.Surface((width, height), pygame.SRCALPHA)
+    for radius, alpha in ((520, 26), (360, 34), (220, 42)):
+        pygame.draw.circle(
+            glow,
+            (45, 95, 165, alpha),
+            (width // 2, int(height * 0.32)),
+            radius,
+        )
+    screen.blit(glow, (0, 0))
 
     title_font = _scaled_font(width, height, 92, bold=True)
     title = title_font.render("UNO Tay`", True, TEXT_LIGHT)
@@ -1246,9 +1305,51 @@ def render_title_screen(screen: pygame.Surface) -> None:
     screen.blit(title, title.get_rect(midtop=(width // 2, title_y)))
 
     subtitle_font = _scaled_font(width, height, 34)
-    subtitle = subtitle_font.render("An UNO game inspired by Domixi", True, (218, 226, 232))
+    subtitle = subtitle_font.render("A chaotic UNO-style party game", True, (218, 226, 232))
     subtitle_rect = subtitle.get_rect(midtop=(width // 2, title_y + title.get_height() + 6))
     screen.blit(subtitle, subtitle_rect)
+
+    compact_cards = [
+        (0.18, 0.24, -18, 0, 0, 0.85),
+        (0.3, 0.36, 12, 0, 8, 0.95),
+        (0.2, 0.58, -9, 1, 9, 0.95),
+        (0.14, 0.72, 7, 2, 10, 0.85),
+        (0.78, 0.32, 18, 3, 8, 0.95),
+        (0.86, 0.6, -7, 4, 9, 0.9),
+    ]
+    base_cards = [
+        (0.16, 0.2, -22, 0, 0, 0.85),
+        (0.32, 0.33, 14, 0, 8, 0.98),
+        (0.22, 0.5, -9, 1, 9, 0.95),
+        (0.13, 0.66, 8, 2, 10, 0.82),
+        (0.28, 0.78, -16, 2, 11, 0.88),
+        (0.72, 0.28, 18, 3, 8, 0.98),
+        (0.86, 0.2, 9, 0, 1, 0.82),
+        (0.79, 0.52, -7, 4, 9, 0.95),
+        (0.9, 0.68, 12, 5, 1, 0.82),
+        (0.7, 0.78, 6, 3, 11, 0.86),
+    ]
+    extra_cards = [
+        (0.06, 0.46, -6, 1, 0, 0.74),
+        (0.94, 0.44, 6, 5, 1, 0.74),
+        (0.36, 0.18, 10, 0, 2, 0.82),
+        (0.64, 0.18, -12, 0, 3, 0.82),
+        (0.36, 0.62, -8, 3, 6, 0.8),
+        (0.64, 0.62, 10, 4, 6, 0.8),
+    ]
+    card_specs = compact_cards if width < 1200 else base_cards
+    if width >= 1500 and height >= 820:
+        card_specs = card_specs + extra_cards
+
+    for x_ratio, y_ratio, angle, row, col, scale_mul in card_specs:
+        _draw_menu_decor_card(
+            screen,
+            (int(width * x_ratio), int(height * y_ratio)),
+            angle,
+            row,
+            col,
+            scale_mul,
+        )
 
     screen_rect = screen.get_rect()
     button_rects = get_title_screen_button_rects(screen_rect)
@@ -1262,6 +1363,10 @@ def render_title_screen(screen: pygame.Surface) -> None:
     _draw_button(screen, button_rects["instructions"], "Instructions", (233, 126, 68), border=(255, 184, 128))
     _draw_button(screen, button_rects["settings"], "Settings", UNO_YELLOW, border=(255, 236, 145))
     _draw_button(screen, button_rects["quit"], "Quit", UNO_RED, border=(246, 166, 166))
+
+    footer_font = _scaled_font(width, height, 22)
+    footer = footer_font.render("ESC to quit - Choose a mode to begin", True, (140, 155, 170))
+    screen.blit(footer, footer.get_rect(center=(width // 2, height - 36)))
 
 
 def get_multiplayer_screen_button_rects(screen_rect: pygame.Rect) -> dict[str, pygame.Rect]:

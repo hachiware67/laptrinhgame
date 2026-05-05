@@ -123,16 +123,7 @@ def main() -> None:
     atlas_path = asset_path("sprites", "PC _ Computer - UNO - Cards - Cards (Classic).png")
     atlas = CardSpriteAtlas(atlas_path)
     audio_settings = AudioSettings()
-    bgm_loaded = False
-    if mixer_ready:
-        bgm_path = asset_path("bgm", "domixi tay bac.mp3")
-        if bgm_path.exists():
-            try:
-                pygame.mixer.music.load(str(bgm_path))
-                pygame.mixer.music.set_volume(audio_settings.music_mix())
-                bgm_loaded = True
-            except pygame.error:
-                bgm_loaded = False
+    current_bgm_track = None
 
     current_screen = TitleScreen(atlas, audio_settings)
     bgm_playing = False
@@ -141,13 +132,31 @@ def main() -> None:
     running = True
     while running:
         now = pygame.time.get_ticks()
-        if bgm_loaded:
+        if mixer_ready:
             current_mix = audio_settings.music_mix()
             if last_music_mix is None or abs(current_mix - last_music_mix) >= 0.01:
                 pygame.mixer.music.set_volume(current_mix)
                 last_music_mix = current_mix
 
-        if bgm_loaded and current_screen.wants_bgm:
+        desired_track = None
+        if mixer_ready and current_screen.wants_bgm:
+            desired_track = current_screen.bgm_track
+            if desired_track is not None and not desired_track.exists():
+                desired_track = None
+
+        if desired_track != current_bgm_track:
+            if bgm_playing:
+                pygame.mixer.music.stop()
+                bgm_playing = False
+            current_bgm_track = None
+            if desired_track is not None:
+                try:
+                    pygame.mixer.music.load(str(desired_track))
+                    current_bgm_track = desired_track
+                except pygame.error:
+                    current_bgm_track = None
+
+        if current_bgm_track is not None:
             if not bgm_playing:
                 pygame.mixer.music.play(-1)
                 bgm_playing = True
