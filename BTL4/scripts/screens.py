@@ -2171,7 +2171,6 @@ class PlayingScreen(BaseScreen):
         if (
             not self._has_modal_input()
             and self.game.winner is None
-            and self.game.current_player == 0
         ):
             self.hovered_index = get_hovered_hand_index(
                 pygame.mouse.get_pos(),
@@ -3341,6 +3340,9 @@ class PlayingScreen(BaseScreen):
         if self.game.is_player_flashbanged(0):
             return list(range(min(len(hand), 10)))
         legal_indices = self.game.get_legal_card_indices(0)
+        if not legal_indices:
+            # Keep cards visible when the player has no legal play (e.g. silenced + draw penalty cases).
+            return list(range(min(len(hand), 10)))
 
         def compact_priority(index: int) -> tuple[int, int]:
             card = hand[index]
@@ -3353,14 +3355,16 @@ class PlayingScreen(BaseScreen):
             return (3, index)
 
         prioritized = sorted(legal_indices, key=compact_priority)
-        visible = prioritized[:10]
+        visible_set = set(prioritized[:10])
         if (
             self.selected_index in legal_indices
-            and self.selected_index not in visible
-            and len(visible) >= 10
+            and self.selected_index not in visible_set
+            and len(visible_set) >= 10
         ):
-            visible = visible[:9] + [self.selected_index]
-        return visible
+            # Keep the player's current selection reachable in compact mode.
+            visible_set = set(prioritized[:9] + [self.selected_index])
+        # Preserve canonical hand order so click detection and submitted card indices stay aligned.
+        return sorted(visible_set)
 
     def _clamp_selected_index(self) -> None:
         hand = self.game.player_hands[0]
@@ -3682,6 +3686,7 @@ class MultiplayerPlayingScreen(PlayingScreen):
             self.room_state = room_payload
 
         previous_game = self._base_game
+        was_local_flashbanged = previous_game.is_player_flashbanged(0)
         remapped_payload = _remap_game_payload_to_local_view(game_payload, self.local_canonical_player_id)
         event = packet.get("event")
         action = ""
@@ -3728,6 +3733,8 @@ class MultiplayerPlayingScreen(PlayingScreen):
                 return
 
         self._apply_network_snapshot(remapped_payload, previous_game)
+        if not was_local_flashbanged and self._base_game.is_player_flashbanged(0):
+            self._trigger_flashbang_visual()
         self._last_sync_seq = seq
         self._action_in_flight = False
         if isinstance(event, dict):
@@ -4056,7 +4063,6 @@ class MultiplayerPlayingScreen(PlayingScreen):
         if (
             not self._has_modal_input()
             and self.game.winner is None
-            and self.game.current_player == 0
         ):
             self.hovered_index = get_hovered_hand_index(
                 pygame.mouse.get_pos(),
