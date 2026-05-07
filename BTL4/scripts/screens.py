@@ -3538,6 +3538,13 @@ class MultiplayerPlayingScreen(PlayingScreen):
         self._queued_hand_transfer_payload: dict[str, Any] | None = None
         self._hand_transfer_pre_signature: tuple[tuple[tuple[Optional[str], str, Optional[int], Optional[str]], ...], ...] | None = None
         self._last_local_flashbang_remaining = int(self._base_game.flashbang_remaining.get(0, 0))
+        self.restart_vote_open = False
+        self.restart_vote_cast = False
+        self.restart_vote_votes = 0
+        self.restart_vote_total = self._restart_vote_total_from_room()
+        self.restart_vote_message = ""
+        self.restart_vote_requester = ""
+        self.restart_vote_hovered_button: str | None = None
         if isinstance(initial_event, dict):
             self._spawn_remote_event_animation(initial_event, self._base_game)
             message = str(initial_event.get("message", "")).strip()
@@ -3568,6 +3575,84 @@ class MultiplayerPlayingScreen(PlayingScreen):
     def _should_auto_sort_hand_for_compact(self) -> bool:
         # Keep client hand order identical to host-authoritative order.
         return False
+
+    def _restart_vote_total_from_room(self) -> int:
+        players = self.room_state.get("players", [])
+        if isinstance(players, list) and players:
+            return len(players)
+        total = self.room_state.get("human_count", 0)
+        try:
+            return max(0, int(total))
+        except (TypeError, ValueError):
+            return 0
+
+    def _restart_vote_button_rects(self, screen_rect: pygame.Rect) -> dict[str, pygame.Rect]:
+        panel_rect = self._restart_vote_panel_rect(screen_rect)
+        button_w = min(240, panel_rect.width - 72)
+        button_h = 58
+        gap = 22
+        total_w = button_w * 2 + gap
+        left = panel_rect.centerx - total_w // 2
+        y = panel_rect.bottom - button_h - 38
+        return {
+            "vote": pygame.Rect(left, y, button_w, button_h),
+            "close": pygame.Rect(left + button_w + gap, y, button_w, button_h),
+        }
+
+    @staticmethod
+    def _restart_vote_panel_rect(screen_rect: pygame.Rect) -> pygame.Rect:
+        panel_w = min(620, screen_rect.width - 96)
+        panel_h = min(360, screen_rect.height - 96)
+        panel_rect = pygame.Rect(0, 0, panel_w, panel_h)
+        panel_rect.center = screen_rect.center
+        return panel_rect
+
+    def _name_for_canonical_player(self, canonical_player_id: int | None) -> str:
+        if canonical_player_id is None:
+            return "A player"
+        return self.seat_names.get(canonical_player_id, f"Player {canonical_player_id + 1}")
+
+    def handle_events(
+        self,
+        events: list[pygame.event.Event],
+        screen: pygame.Surface,
+        now_ms: int,
+    ) -> ScreenResult:
+        if not self.restart_vote_open:
+            return super().handle_events(events, screen, now_ms)
+
+        for event in events:
+            if event.type == pygame.QUIT:
+                return ScreenResult(running=False)
+
+            if event.type == pygame.MOUSEMOTION:
+                self.restart_vote_hovered_button = None
+                for button_name, rect in self._restart_vote_button_rects(screen.get_rect()).items():
+                    if rect.collidepoint(event.pos):
+                        self.restart_vote_hovered_button = button_name
+                        break
+                continue
+
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self.restart_vote_open = False
+                    self.restart_vote_hovered_button = None
+                    continue
+                if event.key in (pygame.K_RETURN, pygame.K_SPACE) and not self.restart_vote_cast:
+                    self._request_restart_vote()
+                    continue
+
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                button_rects = self._restart_vote_button_rects(screen.get_rect())
+                if button_rects["vote"].collidepoint(event.pos) and not self.restart_vote_cast:
+                    self._request_restart_vote()
+                    continue
+                if button_rects["close"].collidepoint(event.pos):
+                    self.restart_vote_open = False
+                    self.restart_vote_hovered_button = None
+                    continue
+
+        return ScreenResult()
 
     def _submit_network_action(self, action_payload: dict[str, Any]) -> ActionResult:
         if self._action_in_flight:
@@ -3774,6 +3859,19 @@ class MultiplayerPlayingScreen(PlayingScreen):
         action = ""
         if isinstance(event, dict):
             action = str(event.get("action", "")).strip().lower()
+            if action in {"restart_vote", "restart_approved"}:
+                self._apply_restart_vote_event(event)
+
+        if action == "restart_approved":
+            self._apply_network_snapshot(remapped_payload, previous_game)
+            message = ""
+            if isinstance(event, dict):
+                message = str(event.get("message", "")).strip()
+            self._reset_network_restart_visual_state()
+            self.last_message = message or "Restart vote passed. Match restarted."
+            self._last_sync_seq = seq
+            self._action_in_flight = False
+            return
 
         if self._awaiting_hand_transfer_snapshot:
             pending_effect = remapped_payload.get("pending_effect")
@@ -3881,6 +3979,78 @@ class MultiplayerPlayingScreen(PlayingScreen):
         if len(current_cards) <= previous_count:
             return None
         return current_cards[-1]
+
+    def _apply_restart_vote_event(self, event: dict[str, Any]) -> None:
+        action = str(event.get("action", "")).strip().lower()
+        if action not in {"restart_vote", "restart_approved"}:
+            return
+
+        actor_raw = event.get("actor_id")
+        actor_id: int | None
+        try:
+            actor_id = int(actor_raw)
+        except (TypeError, ValueError):
+            actor_id = None
+
+        votes_raw = event.get("restart_votes", self.restart_vote_votes)
+        total_raw = event.get("restart_total", self.restart_vote_total or self._restart_vote_total_from_room())
+        try:
+            self.restart_vote_votes = max(0, int(votes_raw))
+        except (TypeError, ValueError):
+            pass
+        try:
+            self.restart_vote_total = max(0, int(total_raw))
+        except (TypeError, ValueError):
+            self.restart_vote_total = self._restart_vote_total_from_room()
+
+        requester = self._name_for_canonical_player(actor_id)
+        if not self.restart_vote_requester:
+            self.restart_vote_requester = requester
+
+        if actor_id == self.local_canonical_player_id:
+            self.restart_vote_cast = True
+
+        message = str(event.get("message", "")).strip()
+        self.restart_vote_message = message or f"Restart vote: {self.restart_vote_votes}/{self.restart_vote_total}."
+        self.last_message = self.restart_vote_message
+
+        if action == "restart_approved":
+            self.restart_vote_open = False
+            self.restart_vote_hovered_button = None
+            return
+
+        self.restart_vote_open = True
+
+    def _reset_network_restart_visual_state(self) -> None:
+        self.selected_index = 0
+        self.pending_wild_card_index = None
+        self.pending_draw_decision_card = None
+        self.pending_draw_decision_choosing_color = False
+        self.active_cards.clear()
+        self.hidden_hand_card_ids.clear()
+        self._compact_hidden_ids.clear()
+        self._compact_back_virtual_size = 0
+        self._hand_layout_initialized = False
+        self.visual_state = ""
+        self.hand_transfer_animation = None
+        self._awaiting_hand_transfer_snapshot = False
+        self._queued_hand_transfer_payload = None
+        self._hand_transfer_pre_signature = None
+        self.hovered_index = None
+        self.wild_hovered_color = None
+        self.flashbang_delay_remaining_ms = 0
+        self.flashbang_white_remaining_ms = 0
+        self.screen_shake_remaining_ms = 0
+        self.screen_shake_offset = (0, 0)
+        self.uno_flash_remaining_ms = 0
+        self.restart_vote_open = False
+        self.restart_vote_cast = False
+        self.restart_vote_votes = 0
+        self.restart_vote_total = self._restart_vote_total_from_room()
+        self.restart_vote_message = ""
+        self.restart_vote_requester = ""
+        self.restart_vote_hovered_button = None
+        self._clamp_selected_index()
 
     def _spawn_remote_event_animation(self, event: dict[str, Any], previous_game: UnoGameManager) -> None:
         actor_raw = event.get("actor_id")
@@ -4073,10 +4243,75 @@ class MultiplayerPlayingScreen(PlayingScreen):
             self.host.leave_host()
             self.host = None
 
+    def draw(self, screen: pygame.Surface, now_ms: int) -> None:
+        super().draw(screen, now_ms)
+        if self.restart_vote_open:
+            self._draw_restart_vote_modal(screen)
+
+    def _draw_restart_vote_modal(self, screen: pygame.Surface) -> None:
+        overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+        overlay.fill((8, 12, 18, 170))
+        screen.blit(overlay, (0, 0))
+
+        screen_rect = screen.get_rect()
+        panel_rect = self._restart_vote_panel_rect(screen_rect)
+        draw_theme_panel(screen, panel_rect, alpha=232)
+
+        title_font = theme_font(screen_rect.width, screen_rect.height, 42, bold=True)
+        body_font = theme_font(screen_rect.width, screen_rect.height, 25)
+        small_font = theme_font(screen_rect.width, screen_rect.height, 22)
+
+        title_text = title_font.render("RESTART VOTE", True, (245, 245, 245))
+        screen.blit(title_text, title_text.get_rect(center=(panel_rect.centerx, panel_rect.y + 54)))
+
+        requester_text = f"{self.restart_vote_requester} requested a match restart."
+        requester_surface = body_font.render(requester_text, True, (220, 230, 240))
+        screen.blit(requester_surface, requester_surface.get_rect(center=(panel_rect.centerx, panel_rect.y + 108)))
+
+        total = max(1, self.restart_vote_total)
+        votes = max(0, min(self.restart_vote_votes, total))
+        vote_text = body_font.render(f"Votes: {votes}/{total}", True, (245, 220, 120))
+        screen.blit(vote_text, vote_text.get_rect(center=(panel_rect.centerx, panel_rect.y + 156)))
+
+        bar_rect = pygame.Rect(0, 0, min(420, panel_rect.width - 100), 18)
+        bar_rect.center = (panel_rect.centerx, panel_rect.y + 192)
+        pygame.draw.rect(screen, (40, 50, 64), bar_rect, border_radius=9)
+        fill_rect = bar_rect.copy()
+        fill_rect.width = int(bar_rect.width * (votes / total))
+        pygame.draw.rect(screen, SETTINGS_ACTIVE_FILL, fill_rect, border_radius=9)
+        pygame.draw.rect(screen, SETTINGS_IDLE_BORDER, bar_rect, width=2, border_radius=9)
+
+        status = self.restart_vote_message or "Waiting for all human players to vote."
+        status_surface = small_font.render(status, True, (205, 216, 226))
+        screen.blit(status_surface, status_surface.get_rect(center=(panel_rect.centerx, panel_rect.y + 232)))
+
+        button_rects = self._restart_vote_button_rects(screen_rect)
+        vote_disabled = self.restart_vote_cast
+        vote_fill = SETTINGS_IDLE_FILL if vote_disabled else SETTINGS_ACTIVE_FILL
+        vote_border = SETTINGS_IDLE_BORDER if vote_disabled else SETTINGS_ACTIVE_BORDER
+        if self.restart_vote_hovered_button == "vote" and not vote_disabled:
+            vote_fill = (82, 195, 112)
+        GameSettingsScreen._draw_button(
+            screen,
+            button_rects["vote"],
+            "VOTED" if vote_disabled else "VOTE RESTART",
+            vote_fill,
+            vote_border,
+        )
+
+        close_fill = SETTINGS_DANGER_FILL if self.restart_vote_hovered_button == "close" else SETTINGS_IDLE_FILL
+        close_border = SETTINGS_DANGER_BORDER if self.restart_vote_hovered_button == "close" else SETTINGS_IDLE_BORDER
+        GameSettingsScreen._draw_button(screen, button_rects["close"], "CLOSE", close_fill, close_border)
+
     def _activate_pause_menu_option(self, option: str) -> ScreenResult:
         if option == "restart":
             self.pause_menu_open = False
             self.pause_hovered_button = None
+            self.restart_vote_open = True
+            self.restart_vote_total = self._restart_vote_total_from_room()
+            self.restart_vote_message = "Sending restart vote..."
+            self.restart_vote_requester = self.seat_names.get(self.local_canonical_player_id, "You")
+            self.restart_vote_hovered_button = None
             self._request_restart_vote()
             return ScreenResult()
         if option == "return_title":
@@ -4088,6 +4323,11 @@ class MultiplayerPlayingScreen(PlayingScreen):
         if self.is_host_player and self.host is not None:
             ok, message, _approved = self.host.request_restart_vote(self.host.host_player_token, now_ms=now_ms)
             self.last_message = message
+            self.restart_vote_open = True
+            self.restart_vote_message = message
+            if ok and not self.restart_vote_cast:
+                self.restart_vote_votes = min(max(1, self.restart_vote_total), self.restart_vote_votes + 1)
+            self.restart_vote_cast = ok or self.restart_vote_cast
             if ok:
                 sync_packet = self.host.current_match_sync()
                 if sync_packet is not None:
@@ -4096,13 +4336,20 @@ class MultiplayerPlayingScreen(PlayingScreen):
 
         if self.client is None:
             self.last_message = "Multiplayer link not available."
+            self.restart_vote_message = self.last_message
             return
 
         sent = self.client.send({"type": "vote_restart"})
         if sent:
             self.last_message = "Restart vote sent."
+            self.restart_vote_open = True
+            if not self.restart_vote_cast:
+                self.restart_vote_votes = min(max(1, self.restart_vote_total), self.restart_vote_votes + 1)
+            self.restart_vote_cast = True
+            self.restart_vote_message = "Your vote was sent. Waiting for host..."
         else:
             self.last_message = "Could not send restart vote."
+            self.restart_vote_message = self.last_message
 
     def _schedule_reaction_ai(self, now_ms: int) -> None:
         # Host already resolves AI/reaction timing and broadcasts authoritative snapshots.
