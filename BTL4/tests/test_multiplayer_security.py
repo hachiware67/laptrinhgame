@@ -271,6 +271,23 @@ class HostAIPacingTest(unittest.TestCase):
         finally:
             host.close()
 
+    def test_current_match_sync_for_host_includes_latest_event(self) -> None:
+        host = self.make_host(capacity=2)
+        try:
+            ok, _, _ = host.start_match()
+            self.assertTrue(ok)
+
+            sync = host.current_match_sync()
+            self.assertIsNotNone(sync)
+            assert sync is not None
+
+            event = sync.get("event")
+            self.assertIsInstance(event, dict)
+            assert isinstance(event, dict)
+            self.assertEqual(event.get("action"), "match_start")
+        finally:
+            host.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -77,6 +77,29 @@ class MultiplayerVisualSyncTest(unittest.TestCase):
         self.assertEqual(remapped["pending_draw_penalty_source"], 1)
         self.assertEqual(sorted(remapped["silence_remaining"]), [[1, 2], [3, 1]])
 
+    def test_remap_game_payload_moves_flashbang_state_to_local_player(self) -> None:
+        remapped = _remap_game_payload_to_local_view(
+            {
+                "settings": {"num_players": 4},
+                "player_hands": [[], [], [], []],
+                "current_player": 1,
+                "winner": None,
+                "pending_effect_player": None,
+                "pending_draw_penalty_source": None,
+                "pending_draw_decision_player": None,
+                "pending_reaction_players": [],
+                "pending_reaction_times": [],
+                "silence_remaining": [],
+                "flashbang_remaining": [[0, 1], [1, 2], [2, 2], [3, 2]],
+                "active_flashbang_player": 1,
+                "uno_called_players": [],
+            },
+            local_canonical_player_id=1,
+        )
+
+        self.assertEqual(remapped["active_flashbang_player"], 0)
+        self.assertIn([0, 2], remapped["flashbang_remaining"])
+
 
 if __name__ == "__main__":
     unittest.main()
