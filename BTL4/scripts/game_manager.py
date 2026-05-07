@@ -225,6 +225,8 @@ class UnoGameManager:
                 return pk != ACTION_DRAW_67
             if ck == ACTION_DRAW_67:
                 return pk == ACTION_DRAW_67
+            if candidate.is_none_type:
+                return True
             return False
 
         if candidate.is_wild or candidate.is_none_type:
@@ -707,6 +709,9 @@ class UnoGameManager:
 
         self.current_player = self._next_player_index(steps)
         for _ in range(self.num_players):
+            # Pending draw penalties must be resolved by the current player, even if silenced.
+            if self.pending_draw_penalty_count > 0:
+                break
             if self.silence_remaining.get(self.current_player, 0) > 0:
                 self.silence_remaining[self.current_player] -= 1
                 if self.silence_remaining[self.current_player] == 0:
