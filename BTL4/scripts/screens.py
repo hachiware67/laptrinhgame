@@ -122,6 +122,7 @@ def _remap_game_payload_to_local_view(
     remapped["current_player"] = remap_player_value(game_payload.get("current_player"))
     remapped["winner"] = remap_player_value(game_payload.get("winner"))
     remapped["pending_effect_player"] = remap_player_value(game_payload.get("pending_effect_player"))
+    remapped["pending_draw_penalty_source"] = remap_player_value(game_payload.get("pending_draw_penalty_source"))
     remapped["pending_draw_decision_player"] = remap_player_value(game_payload.get("pending_draw_decision_player"))
     remapped["pending_reaction_players"] = [
         _canonical_to_view_player(int(pid), local_canonical_player_id, num_players)
@@ -137,6 +138,23 @@ def _remap_game_payload_to_local_view(
         for item in game_payload.get("flashbang_remaining", [])
         if isinstance(item, list) and len(item) == 2
     ]
+    silence_payload = game_payload.get("silence_remaining", [])
+    remapped_silence_remaining: list[list[int]] = []
+    if isinstance(silence_payload, dict):
+        for player_id, count in silence_payload.items():
+            remapped_silence_remaining.append(
+                [
+                    _canonical_to_view_player(int(player_id), local_canonical_player_id, num_players),
+                    int(count),
+                ]
+            )
+    else:
+        remapped_silence_remaining = [
+            [_canonical_to_view_player(int(item[0]), local_canonical_player_id, num_players), int(item[1])]
+            for item in silence_payload
+            if isinstance(item, list) and len(item) == 2
+        ]
+    remapped["silence_remaining"] = remapped_silence_remaining
     remapped["active_flashbang_player"] = remap_player_value(game_payload.get("active_flashbang_player"))
     remapped["uno_called_players"] = [
         _canonical_to_view_player(int(pid), local_canonical_player_id, num_players)
@@ -1739,6 +1757,7 @@ class ExtensionPackScreen(BaseScreen):
                                 room_name=self.multiplayer_host_setup.room_name,
                                 password=self.multiplayer_host_setup.password,
                                 capacity=self.settings.num_players,
+                                settings=self.settings,
                             )
                         except OSError as exc:
                             self.message = f"Could not host room: {exc}"
