@@ -143,6 +143,8 @@ class HostAuthoritativeMatch:
             seat: f"AI {seat - len(self.human_tokens) + 1}" for seat in sorted(self.ai_seats)
         }
         self.next_ai_action_time_ms = 0
+        self.restart_votes: set[str] = set()
+        self._initial_game_state = _serialize_game_state(self.game)
 
     @property
     def ai_count(self) -> int:
@@ -156,6 +158,27 @@ class HostAuthoritativeMatch:
             humans=[player.display_name for player in room.humans],
             ai_added=self.ai_count,
         )
+
+    def restart_vote_totals(self) -> tuple[int, int]:
+        return len(self.restart_votes), len(self.human_tokens)
+
+    def cast_restart_vote(self, player_token: str) -> tuple[bool, str, bool]:
+        if player_token not in self.human_tokens:
+            return False, "Only connected human players can vote to restart.", False
+        if player_token in self.restart_votes:
+            voted, total = self.restart_vote_totals()
+            return False, f"You already voted to restart ({voted}/{total}).", False
+        self.restart_votes.add(player_token)
+        voted, total = self.restart_vote_totals()
+        approved = total > 0 and voted >= total
+        if approved:
+            return True, "Restart vote passed. Match restarted.", True
+        return True, f"Restart vote: {voted}/{total}.", False
+
+    def restart_from_initial_state(self, now_ms: int) -> None:
+        self.game = deserialize_game_state(self._initial_game_state)
+        self.next_ai_action_time_ms = now_ms + 1500
+        self.restart_votes.clear()
 
     def seat_for_token(self, token: str) -> Optional[int]:
         return self.token_seat.get(token)
@@ -643,6 +666,55 @@ class MultiplayerHost:
     def apply_host_action(self, payload: dict[str, Any], now_ms: int) -> HostActionResult:
         return self.validate_human_action(self.host_token, payload, now_ms)
 
+    def request_restart_vote(self, player_token: str, now_ms: int) -> tuple[bool, str, bool]:
+        with self._lock:
+            match = self._state.match
+            if match is None:
+                return False, "Match has not started.", False
+
+            ok, message, approved = match.cast_restart_vote(player_token)
+            if not ok:
+                return False, message, False
+
+            actor_id = match.seat_for_token(player_token)
+            voted, total = match.restart_vote_totals()
+            if approved:
+                match.restart_from_initial_state(now_ms=now_ms)
+                self._broadcast_match_sync_locked(
+                    {
+                        "actor_id": actor_id,
+                        "action": "restart_approved",
+                        "ok": True,
+                        "message": message,
+                        "played_card": None,
+                        "drew_card": None,
+                        "chosen_direction": None,
+                        "target_player_id": None,
+                        "chosen_color": None,
+                        "restart_votes": voted,
+                        "restart_total": total,
+                    }
+                )
+                self._broadcast({"type": "room_state", "room": self._serialize_room_state()})
+                return True, message, True
+
+            self._broadcast_match_sync_locked(
+                {
+                    "actor_id": actor_id,
+                    "action": "restart_vote",
+                    "ok": True,
+                    "message": message,
+                    "played_card": None,
+                    "drew_card": None,
+                    "chosen_direction": None,
+                    "target_player_id": None,
+                    "chosen_color": None,
+                    "restart_votes": voted,
+                    "restart_total": total,
+                }
+            )
+            return True, message, False
+
     def current_match_sync(self) -> Optional[dict[str, Any]]:
         with self._lock:
             match = self._state.match
@@ -829,6 +901,16 @@ class MultiplayerHost:
             now_ms = int(time.time() * 1000)
             result = self.validate_human_action(current_token, action_payload, now_ms=now_ms)
             return {"type": "action_ack", "ok": result.ok, "message": result.message}, current_token
+
+        if msg_type == "vote_restart":
+            now_ms = int(time.time() * 1000)
+            ok, message, approved = self.request_restart_vote(current_token, now_ms=now_ms)
+            return {
+                "type": "restart_vote_ack",
+                "ok": ok,
+                "message": message,
+                "approved": approved,
+            }, current_token
 
         return None, current_token
 

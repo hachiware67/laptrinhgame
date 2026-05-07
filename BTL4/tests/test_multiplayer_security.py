@@ -104,6 +104,44 @@ class MultiplayerSecurityTest(unittest.TestCase):
         self.assertEqual(len(captured_now_ms), 1)
         self.assertGreaterEqual(captured_now_ms[0], before_ms)
 
+    def test_restart_vote_requires_all_humans_and_resets_match_state(self) -> None:
+        host = self.make_host(capacity=2)
+        guest_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            join_response, guest_token = host._handle_join(
+                {
+                    "type": "join",
+                    "room_id": host.room_id,
+                    "player_name": "Guest",
+                    "password": "",
+                },
+                guest_conn,
+                ("127.0.0.1", 50000),
+            )
+            self.assertEqual(join_response["type"], "join_ok")
+            assert guest_token is not None
+
+            ok, _, _ = host.start_match()
+            self.assertTrue(ok)
+            match = host._state.match
+            self.assertIsNotNone(match)
+            assert match is not None
+            match.game.current_player = 1
+
+            vote_ok, _, approved = host.request_restart_vote(host.host_player_token, now_ms=int(time.time() * 1000))
+            self.assertTrue(vote_ok)
+            self.assertFalse(approved)
+            self.assertEqual(match.game.current_player, 1)
+
+            vote_ok, _, approved = host.request_restart_vote(guest_token, now_ms=int(time.time() * 1000))
+            self.assertTrue(vote_ok)
+            self.assertTrue(approved)
+            self.assertEqual(match.game.current_player, 0)
+            self.assertEqual(match.restart_votes, set())
+        finally:
+            host.close()
+            guest_conn.close()
+
 
 class HostAIPacingTest(unittest.TestCase):
     def make_host(self, capacity: int = 2) -> MultiplayerHost:

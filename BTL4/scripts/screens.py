@@ -1,6 +1,7 @@
 import random
 import os
 import time
+import copy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Any
@@ -2020,7 +2021,7 @@ class PlayingScreen(BaseScreen):
     SHAKE_DURATION_MS = 260
     SHAKE_MAX_OFFSET = 10
     UNO_FLASH_DURATION_MS = 950
-    PAUSE_MENU_OPTIONS = ("resume", "return_title")
+    PAUSE_MENU_OPTIONS = ("resume", "restart", "return_title")
 
     def __init__(
         self,
@@ -2075,6 +2076,7 @@ class PlayingScreen(BaseScreen):
         self._shadow_cache: dict[tuple[int, int, int], pygame.Surface] = {}
         self._compact_hidden_ids: set[int] = set()
         self._compact_back_virtual_size: int = 0
+        self._initial_game_snapshot: UnoGameManager | None = copy.deepcopy(game) if isinstance(game, UnoGameManager) else None
 
     @property
     def wants_bgm(self) -> bool:
@@ -2364,12 +2366,19 @@ class PlayingScreen(BaseScreen):
         screen.blit(overlay, (0, 0))
 
     @staticmethod
-    def _pause_button_rects(screen_rect: pygame.Rect) -> dict[str, pygame.Rect]:
+    def _pause_panel_rect(screen_rect: pygame.Rect) -> pygame.Rect:
         panel_width = min(560, screen_rect.width - 120)
-        panel_height = 340
+        button_h = 66
+        gap = 24
+        content_height = len(PlayingScreen.PAUSE_MENU_OPTIONS) * button_h + (len(PlayingScreen.PAUSE_MENU_OPTIONS) - 1) * gap
+        panel_height = max(340, 180 + content_height)
         panel_rect = pygame.Rect(0, 0, panel_width, panel_height)
         panel_rect.center = screen_rect.center
+        return panel_rect
 
+    @staticmethod
+    def _pause_button_rects(screen_rect: pygame.Rect) -> dict[str, pygame.Rect]:
+        panel_rect = PlayingScreen._pause_panel_rect(screen_rect)
         button_w = min(340, panel_rect.width - 80)
         button_h = 66
         gap = 24
@@ -2377,7 +2386,8 @@ class PlayingScreen(BaseScreen):
         first_y = panel_rect.y + 150
         return {
             "resume": pygame.Rect(left, first_y, button_w, button_h),
-            "return_title": pygame.Rect(left, first_y + button_h + gap, button_w, button_h),
+            "restart": pygame.Rect(left, first_y + (button_h + gap), button_w, button_h),
+            "return_title": pygame.Rect(left, first_y + 2 * (button_h + gap), button_w, button_h),
         }
 
     def _handle_pause_menu_event(
@@ -2426,11 +2436,47 @@ class PlayingScreen(BaseScreen):
             self.last_message = "Game resumed."
             return ScreenResult()
 
+        if option == "restart":
+            self.pause_menu_open = False
+            self.pause_hovered_button = None
+            return self._restart_local_match()
+
         if option == "return_title":
             self.pause_menu_open = False
             self.pause_hovered_button = None
             return ScreenResult(next_screen=TitleScreen(self.atlas, self.audio_settings))
 
+        return ScreenResult()
+
+    def _restart_local_match(self) -> ScreenResult:
+        if self._initial_game_snapshot is None:
+            self.last_message = "Restart unavailable for this match."
+            return ScreenResult()
+
+        self.game = copy.deepcopy(self._initial_game_snapshot)
+        self.display_top_card = self.game.top_discard
+        self.selected_index = 0
+        self.pending_wild_card_index = None
+        self.pending_draw_decision_card = None
+        self.pending_draw_decision_choosing_color = False
+        self.active_cards.clear()
+        self.hidden_hand_card_ids.clear()
+        self._compact_hidden_ids.clear()
+        self._compact_back_virtual_size = 0
+        self._hand_layout_initialized = False
+        self.visual_state = ""
+        self.hand_transfer_animation = None
+        self.hovered_index = None
+        self.wild_hovered_color = None
+        self.reaction_ai_due_times.clear()
+        self.flashbang_delay_remaining_ms = 0
+        self.flashbang_white_remaining_ms = 0
+        self.screen_shake_remaining_ms = 0
+        self.screen_shake_offset = (0, 0)
+        self.uno_flash_remaining_ms = 0
+        self.next_ai_time = pygame.time.get_ticks() + self.AI_TURN_DELAY_MS
+        self.last_message = "Match restarted."
+        self._clamp_selected_index()
         return ScreenResult()
 
     def _draw_pause_menu(self, screen: pygame.Surface) -> None:
@@ -2439,10 +2485,7 @@ class PlayingScreen(BaseScreen):
         screen.blit(overlay, (0, 0))
 
         screen_rect = screen.get_rect()
-        panel_width = min(560, screen_rect.width - 120)
-        panel_height = 340
-        panel_rect = pygame.Rect(0, 0, panel_width, panel_height)
-        panel_rect.center = screen_rect.center
+        panel_rect = self._pause_panel_rect(screen_rect)
 
         draw_theme_panel(screen, panel_rect, alpha=230)
 
@@ -2455,6 +2498,7 @@ class PlayingScreen(BaseScreen):
 
         labels = {
             "resume": "RESUME",
+            "restart": "RESTART MATCH",
             "return_title": "RETURN TO TITLE",
         }
         button_rects = self._pause_button_rects(screen_rect)
@@ -3135,6 +3179,8 @@ class PlayingScreen(BaseScreen):
             duration = 0.38
         if kind == "draw" and owner_id != 0:
             duration = 0.28
+        if kind == "return_to_pile":
+            duration = 0.26
         self.active_cards.append(
             ActiveCard(
                 card=card,
@@ -3150,6 +3196,29 @@ class PlayingScreen(BaseScreen):
                 duration=duration,
             )
         )
+
+    def _spawn_mom_may_cry_return_animation(
+        self,
+        owner_id: int,
+        returned_count: int,
+        screen_rect: pygame.Rect,
+    ) -> None:
+        draw_center = get_draw_pile_rect(screen_rect.width, screen_rect.height).center
+        owner_anchor = get_player_anchor_point(screen_rect, owner_id, self.game.num_players)
+        owner_rotation = get_player_card_rotation(owner_id, self.game.num_players)
+        for idx in range(returned_count):
+            # Visual-only placeholder; rendered as card backs in _draw_active_cards.
+            visual_card = Card(color="red", kind="number", number=0)
+            spread = float((idx - (returned_count - 1) / 2.0) * 10.0)
+            self._spawn_active_card(
+                card=visual_card,
+                owner_id=owner_id,
+                kind="return_to_pile",
+                start_pos=(float(owner_anchor[0] + spread), float(owner_anchor[1] - abs(spread) * 0.2)),
+                target_pos=(float(draw_center[0] + spread * 0.35), float(draw_center[1] + spread * 0.15)),
+                start_rotation=owner_rotation,
+                target_rotation=0.0,
+            )
 
     def _update_active_cards(self, dt: float) -> None:
         still_active: list[ActiveCard] = []
@@ -3224,6 +3293,8 @@ class PlayingScreen(BaseScreen):
                     flip_x = max(0.08, abs(0.5 - flip) * 2.0)
                     flip_width = max(8, int(88 * flip_x))
                     card_img = pygame.transform.smoothscale(base_surface, (flip_width, 130))
+            elif active_card.kind == "return_to_pile":
+                card_img = self.atlas.get_back_surface(88, 130)
             else:
                 card_img = self.atlas.get_card_surface(active_card.card, 88, 130)
             card_img = transform_card_surface(card_img, active_card.current_rotation, active_card.current_scale)
@@ -3879,6 +3950,15 @@ class MultiplayerPlayingScreen(PlayingScreen):
                 start_rotation=start_rotation,
                 target_rotation=get_player_card_rotation(actor_id, self._base_game.num_players) + self.ai_rng.uniform(-15.0, 15.0),
             )
+            if played_card.kind == ACTION_MOM_MAY_CRY:
+                previous_hand_len = len(previous_game.player_hands[actor_id]) if 0 <= actor_id < len(previous_game.player_hands) else 0
+                current_hand_len = len(self._base_game.player_hands[actor_id]) if 0 <= actor_id < len(self._base_game.player_hands) else 0
+                if action == "draw_play":
+                    returned_count = max(0, previous_hand_len - current_hand_len)
+                else:
+                    returned_count = max(0, previous_hand_len - current_hand_len - 1)
+                if returned_count > 0:
+                    self._spawn_mom_may_cry_return_animation(actor_id, returned_count, screen_rect)
             return
         if drew_card is not None and action in {"draw", "draw_keep"}:
             source_card = drew_card
@@ -3992,9 +4072,35 @@ class MultiplayerPlayingScreen(PlayingScreen):
             self.host = None
 
     def _activate_pause_menu_option(self, option: str) -> ScreenResult:
+        if option == "restart":
+            self.pause_menu_open = False
+            self.pause_hovered_button = None
+            self._request_restart_vote()
+            return ScreenResult()
         if option == "return_title":
             self._close_network()
         return super()._activate_pause_menu_option(option)
+
+    def _request_restart_vote(self) -> None:
+        now_ms = int(time.time() * 1000)
+        if self.is_host_player and self.host is not None:
+            ok, message, _approved = self.host.request_restart_vote(self.host.host_player_token, now_ms=now_ms)
+            self.last_message = message
+            if ok:
+                sync_packet = self.host.current_match_sync()
+                if sync_packet is not None:
+                    self._sync_from_packet(sync_packet)
+            return
+
+        if self.client is None:
+            self.last_message = "Multiplayer link not available."
+            return
+
+        sent = self.client.send({"type": "vote_restart"})
+        if sent:
+            self.last_message = "Restart vote sent."
+        else:
+            self.last_message = "Could not send restart vote."
 
     def _schedule_reaction_ai(self, now_ms: int) -> None:
         # Host already resolves AI/reaction timing and broadcasts authoritative snapshots.
@@ -4028,6 +4134,11 @@ class MultiplayerPlayingScreen(PlayingScreen):
                     if not packet.get("ok", False):
                         self._action_in_flight = False
                         self.last_message = str(packet.get("message", "Action rejected by host."))
+                elif packet_type == "restart_vote_ack":
+                    if not packet.get("ok", False):
+                        self.last_message = str(packet.get("message", "Restart vote rejected by host."))
+                    elif packet.get("message"):
+                        self.last_message = str(packet.get("message"))
                 elif packet_type == "disconnected":
                     self._close_network()
                     return TitleScreen(self.atlas, self.audio_settings)
