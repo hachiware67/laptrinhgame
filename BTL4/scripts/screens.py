@@ -1262,6 +1262,7 @@ class MultiplayerScreen(BaseScreen):
             room_state=self.room_state or {},
             seat_names=seat_names,
             initial_seq=int(sync_packet.get("seq", 0) or 0),
+            initial_event=sync_packet.get("event") if isinstance(sync_packet.get("event"), dict) else None,
             next_ai_time=now_ms + PlayingScreen.AI_TURN_DELAY_MS,
         )
         self.host = None
@@ -3438,6 +3439,7 @@ class MultiplayerPlayingScreen(PlayingScreen):
         room_state: dict[str, Any],
         seat_names: dict[int, str],
         initial_seq: int = 0,
+        initial_event: Optional[dict[str, Any]] = None,
         last_message: str = "",
         next_ai_time: int = 0,
     ) -> None:
@@ -3462,6 +3464,12 @@ class MultiplayerPlayingScreen(PlayingScreen):
         self._awaiting_hand_transfer_snapshot = False
         self._queued_hand_transfer_payload: dict[str, Any] | None = None
         self._hand_transfer_pre_signature: tuple[tuple[tuple[Optional[str], str, Optional[int], Optional[str]], ...], ...] | None = None
+        self._last_local_flashbang_remaining = int(self._base_game.flashbang_remaining.get(0, 0))
+        if isinstance(initial_event, dict):
+            self._spawn_remote_event_animation(initial_event, self._base_game)
+            message = str(initial_event.get("message", "")).strip()
+            if message:
+                self.last_message = message
 
     def _handoff_to_room_screen(self, message: str) -> BaseScreen:
         next_screen = MultiplayerScreen(self.atlas, self.audio_settings)
@@ -3687,6 +3695,7 @@ class MultiplayerPlayingScreen(PlayingScreen):
 
         previous_game = self._base_game
         was_local_flashbanged = previous_game.is_player_flashbanged(0)
+        previous_local_flashbang_remaining = int(previous_game.flashbang_remaining.get(0, 0))
         remapped_payload = _remap_game_payload_to_local_view(game_payload, self.local_canonical_player_id)
         event = packet.get("event")
         action = ""
@@ -3733,8 +3742,13 @@ class MultiplayerPlayingScreen(PlayingScreen):
                 return
 
         self._apply_network_snapshot(remapped_payload, previous_game)
-        if not was_local_flashbanged and self._base_game.is_player_flashbanged(0):
+        current_local_flashbang_remaining = int(self._base_game.flashbang_remaining.get(0, 0))
+        if (
+            current_local_flashbang_remaining > previous_local_flashbang_remaining
+            or (not was_local_flashbanged and self._base_game.is_player_flashbanged(0))
+        ):
             self._trigger_flashbang_visual()
+        self._last_local_flashbang_remaining = current_local_flashbang_remaining
         self._last_sync_seq = seq
         self._action_in_flight = False
         if isinstance(event, dict):

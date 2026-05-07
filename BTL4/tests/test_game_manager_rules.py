@@ -415,6 +415,40 @@ class UnoRuleSettingsTest(unittest.TestCase):
         self.assertEqual(game.current_player, 1)
         self.assertEqual(game.silence_remaining, {1: 2})
 
+    def test_draw67_penalty_rejects_other_none_type_cards(self) -> None:
+        game = self.make_game(GameSettings(num_players=2, extension_packs=["mixi"]))
+        game.pending_draw_penalty_count = 67
+        game.pending_draw_penalty_kind = ACTION_DRAW_67
+        game.player_hands = [
+            [Card(color=None, kind=ACTION_SILENCE), number("blue", 1)],
+            [number("yellow", 3)],
+        ]
+
+        result = game.submit_action(PlayerAction(player_id=0, action_type="play", card_index=0))
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.message, "Illegal card for current top card/color.")
+        self.assertEqual(game.pending_draw_penalty_count, 67)
+        self.assertEqual(game.pending_draw_penalty_kind, ACTION_DRAW_67)
+
+    def test_draw67_penalty_is_resolved_when_player_draws(self) -> None:
+        game = self.make_game(GameSettings(num_players=2, extension_packs=["mixi"]))
+        game.pending_draw_penalty_count = 67
+        game.pending_draw_penalty_kind = ACTION_DRAW_67
+        game.player_hands = [
+            [Card(color=None, kind=ACTION_SILENCE), number("blue", 1)],
+            [number("yellow", 3)],
+        ]
+        before_count = len(game.player_hands[0])
+
+        result = game.draw_for_decision(0)
+
+        self.assertTrue(result.ok)
+        self.assertIn("drew 67 cards", result.message)
+        self.assertEqual(len(game.player_hands[0]), before_count + 67)
+        self.assertEqual(game.pending_draw_penalty_count, 0)
+        self.assertIsNone(game.pending_draw_penalty_kind)
+
 
 if __name__ == "__main__":
     unittest.main()

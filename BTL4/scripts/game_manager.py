@@ -226,7 +226,7 @@ class UnoGameManager:
             if ck == ACTION_DRAW_67:
                 return pk == ACTION_DRAW_67
             if candidate.is_none_type:
-                return True
+                return pk in (ACTION_DRAW_TWO, ACTION_WILD_DRAW_FOUR)
             return False
 
         if candidate.is_wild or candidate.is_none_type:
