@@ -2021,6 +2021,9 @@ class PlayingScreen(BaseScreen):
     SHAKE_DURATION_MS = 260
     SHAKE_MAX_OFFSET = 10
     UNO_FLASH_DURATION_MS = 950
+    FLASHBANG_FACE_DOWN_DELAY_MS = 1000
+    FLASHBANG_WHITE_DELAY_MS = 1000
+    FLASHBANG_FADE_DURATION_MS = 1800
     PAUSE_MENU_OPTIONS = ("resume", "restart", "return_title")
 
     def __init__(
@@ -2071,7 +2074,8 @@ class PlayingScreen(BaseScreen):
         self.uno_flash_text = ""
         self.uno_flash_color: tuple[int, int, int] = (65, 175, 95)
         self.uno_flash_remaining_ms = 0
-        self.flashbang_delay_remaining_ms = 0
+        self.flashbang_face_down_delay_remaining_ms = 0
+        self.flashbang_white_delay_remaining_ms = 0
         self.flashbang_white_remaining_ms = 0
         self._shadow_cache: dict[tuple[int, int, int], pygame.Surface] = {}
         self._compact_hidden_ids: set[int] = set()
@@ -2329,6 +2333,8 @@ class PlayingScreen(BaseScreen):
     def _facedown_card_ids(self) -> set[int]:
         if not self.game.is_player_flashbanged(0):
             return set()
+        if self.flashbang_face_down_delay_remaining_ms > 0:
+            return set()
         return {id(card) for card in self.game.player_hands[0]}
 
     def _play_extension_card_sound(self, card_kind: str) -> None:
@@ -2337,29 +2343,42 @@ class PlayingScreen(BaseScreen):
             self._play_card_sound(sound)
 
     def _trigger_flashbang_visual(self) -> None:
-        self.flashbang_delay_remaining_ms = max(self.flashbang_delay_remaining_ms, 1000)
-        self.flashbang_white_remaining_ms = max(self.flashbang_white_remaining_ms, 0)
+        self.flashbang_face_down_delay_remaining_ms = max(
+            self.flashbang_face_down_delay_remaining_ms,
+            self.FLASHBANG_FACE_DOWN_DELAY_MS,
+        )
+        self.flashbang_white_delay_remaining_ms = max(
+            self.flashbang_white_delay_remaining_ms,
+            self.FLASHBANG_WHITE_DELAY_MS,
+        )
         self.game.is_animating = True
 
     def _update_flashbang_visual(self, dt: float) -> None:
         dt_ms = int(dt * 1000.0)
-        if self.flashbang_delay_remaining_ms > 0:
-            self.flashbang_delay_remaining_ms = max(0, self.flashbang_delay_remaining_ms - dt_ms)
-            if self.flashbang_delay_remaining_ms == 0:
-                self.flashbang_white_remaining_ms = max(self.flashbang_white_remaining_ms, 700)
-        elif self.flashbang_white_remaining_ms > 0:
+        if self.flashbang_face_down_delay_remaining_ms > 0:
+            self.flashbang_face_down_delay_remaining_ms = max(0, self.flashbang_face_down_delay_remaining_ms - dt_ms)
+        if self.flashbang_white_delay_remaining_ms > 0:
+            self.flashbang_white_delay_remaining_ms = max(0, self.flashbang_white_delay_remaining_ms - dt_ms)
+            if self.flashbang_white_delay_remaining_ms == 0:
+                self.flashbang_white_remaining_ms = max(
+                    self.flashbang_white_remaining_ms,
+                    self.FLASHBANG_FADE_DURATION_MS,
+                )
+        if self.flashbang_white_remaining_ms > 0:
             self.flashbang_white_remaining_ms = max(0, self.flashbang_white_remaining_ms - dt_ms)
 
-        if self.flashbang_delay_remaining_ms > 0 or self.flashbang_white_remaining_ms > 0:
+        if (
+            self.flashbang_face_down_delay_remaining_ms > 0
+            or self.flashbang_white_delay_remaining_ms > 0
+            or self.flashbang_white_remaining_ms > 0
+        ):
             self.game.is_animating = True
 
     def _draw_flashbang_overlay(self, screen: pygame.Surface) -> None:
-        if self.flashbang_delay_remaining_ms > 0:
-            return
         if self.flashbang_white_remaining_ms <= 0:
             return
 
-        progress = self.flashbang_white_remaining_ms / 700.0
+        progress = self.flashbang_white_remaining_ms / self.FLASHBANG_FADE_DURATION_MS
         alpha = max(0, min(255, int(255 * progress)))
         overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
         overlay.fill((255, 255, 255, alpha))
@@ -2469,7 +2488,8 @@ class PlayingScreen(BaseScreen):
         self.hovered_index = None
         self.wild_hovered_color = None
         self.reaction_ai_due_times.clear()
-        self.flashbang_delay_remaining_ms = 0
+        self.flashbang_face_down_delay_remaining_ms = 0
+        self.flashbang_white_delay_remaining_ms = 0
         self.flashbang_white_remaining_ms = 0
         self.screen_shake_remaining_ms = 0
         self.screen_shake_offset = (0, 0)
@@ -3249,7 +3269,12 @@ class PlayingScreen(BaseScreen):
 
         self.active_cards = still_active
         
-        if not self.active_cards and self.game.is_animating:
+        flashbang_visual_active = (
+            self.flashbang_face_down_delay_remaining_ms > 0
+            or self.flashbang_white_delay_remaining_ms > 0
+            or self.flashbang_white_remaining_ms > 0
+        )
+        if not self.active_cards and self.game.is_animating and not flashbang_visual_active:
             self.game.is_animating = False
 
     def _get_shadow_surface(self, width: int, height: int, alpha: int) -> pygame.Surface:
@@ -4038,7 +4063,8 @@ class MultiplayerPlayingScreen(PlayingScreen):
         self._hand_transfer_pre_signature = None
         self.hovered_index = None
         self.wild_hovered_color = None
-        self.flashbang_delay_remaining_ms = 0
+        self.flashbang_face_down_delay_remaining_ms = 0
+        self.flashbang_white_delay_remaining_ms = 0
         self.flashbang_white_remaining_ms = 0
         self.screen_shake_remaining_ms = 0
         self.screen_shake_offset = (0, 0)
@@ -4409,6 +4435,7 @@ class MultiplayerPlayingScreen(PlayingScreen):
         self._last_update_ms = now_ms
         self._update_screen_shake(dt)
         self._update_uno_flash(dt)
+        self._update_flashbang_visual(dt)
 
         if self.game.winner is not None:
             winner_name = self.seat_names.get(self.game.winner, f"Player {self.game.winner + 1}")
