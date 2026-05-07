@@ -2679,6 +2679,7 @@ class PlayingScreen(BaseScreen):
                 self._draw_for_decision(screen, now_ms)
 
     def _handle_key_down(self, event: pygame.event.Event, screen: pygame.Surface, now_ms: int) -> None:
+        self._clamp_selected_index()
         hand = self.game.player_hands[0]
 
         if self._wild_color_picker_active():
@@ -2714,6 +2715,7 @@ class PlayingScreen(BaseScreen):
         elif event.key == pygame.K_RIGHT and hand:
             self.selected_index = (self.selected_index + 1) % len(hand)
         elif event.key in (pygame.K_RETURN, pygame.K_SPACE) and hand and self.game.pending_effect is None:
+            self._clamp_selected_index()
             card = hand[self.selected_index]
             if card.is_wild:
                 self.pending_wild_card_index = self.selected_index
