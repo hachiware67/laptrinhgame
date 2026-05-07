@@ -217,17 +217,7 @@ class UnoGameManager:
         top = self.top_discard
 
         if self.pending_draw_penalty_count > 0:
-            pk = self.pending_draw_penalty_kind
-            ck = candidate.kind
-            if ck == ACTION_DRAW_TWO:
-                return pk in (ACTION_DRAW_TWO, None)
-            if ck == ACTION_WILD_DRAW_FOUR:
-                return pk != ACTION_DRAW_67
-            if ck == ACTION_DRAW_67:
-                return pk == ACTION_DRAW_67
-            if candidate.is_none_type:
-                return pk in (ACTION_DRAW_TWO, ACTION_WILD_DRAW_FOUR)
-            return False
+            return self.can_stack_draw_penalty(candidate)
 
         if candidate.is_wild or candidate.is_none_type:
             return True
@@ -760,6 +750,8 @@ class UnoGameManager:
     def can_stack_draw_penalty(self, card: Card) -> bool:
         if self.pending_draw_penalty_count <= 0:
             return False
+        if self.pending_draw_penalty_kind == ACTION_DRAW_67:
+            return card.kind == ACTION_DRAW_67
         if self.pending_draw_penalty_kind == ACTION_WILD_DRAW_FOUR:
             return card.kind == ACTION_WILD_DRAW_FOUR
         return card.kind in (ACTION_DRAW_TWO, ACTION_WILD_DRAW_FOUR)

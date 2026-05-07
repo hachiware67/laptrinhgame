@@ -384,7 +384,7 @@ class UnoRuleSettingsTest(unittest.TestCase):
         self.assertEqual(result.message, "Not this player's turn.")
         self.assertNotIn(1, game.uno_called_players)
 
-    def test_mixi_none_type_card_can_be_played_while_draw_penalty_is_pending(self) -> None:
+    def test_mixi_none_type_card_cannot_bypass_draw_penalty(self) -> None:
         game = self.make_game(GameSettings(num_players=2, extension_packs=["mixi"]))
         game.pending_draw_penalty_count = 2
         game.pending_draw_penalty_kind = ACTION_DRAW_TWO
@@ -395,10 +395,11 @@ class UnoRuleSettingsTest(unittest.TestCase):
 
         result = game.submit_action(PlayerAction(player_id=0, action_type="play", card_index=0))
 
-        self.assertTrue(result.ok)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.message, "Illegal card for current top card/color.")
         self.assertEqual(game.pending_draw_penalty_count, 2)
         self.assertEqual(game.pending_draw_penalty_kind, ACTION_DRAW_TWO)
-        self.assertEqual(game.current_player, 1)
+        self.assertEqual(game.current_player, 0)
 
     def test_silenced_player_is_not_skipped_when_draw_penalty_is_pending(self) -> None:
         game = self.make_game(GameSettings(num_players=2, extension_packs=["mixi"]))
