@@ -25,6 +25,7 @@ DISCOVERY_PORT = 43841
 DEFAULT_GAME_PORT = 43842
 DISCOVERY_INTERVAL_SEC = 1.0
 ROOM_TTL_SEC = 3.2
+HOST_AI_ACTION_DELAY_MS = 2500
 MAX_PACKET_SIZE = 65536
 MAX_TCP_LINE_SIZE = 65536
 MAX_DISPLAY_NAME_LENGTH = 24
@@ -143,6 +144,7 @@ class HostAuthoritativeMatch:
             seat: f"AI {seat - len(self.human_tokens) + 1}" for seat in sorted(self.ai_seats)
         }
         self.next_ai_action_time_ms = 0
+        self._scheduled_ai_player: Optional[int] = None
         self.restart_votes: set[str] = set()
         self._initial_game_state = _serialize_game_state(self.game)
 
@@ -177,7 +179,8 @@ class HostAuthoritativeMatch:
 
     def restart_from_initial_state(self, now_ms: int) -> None:
         self.game = deserialize_game_state(self._initial_game_state)
-        self.next_ai_action_time_ms = now_ms + 1500
+        self.next_ai_action_time_ms = now_ms + HOST_AI_ACTION_DELAY_MS
+        self._scheduled_ai_player = self.game.current_player if self.game.current_player in self.ai_seats else None
         self.restart_votes.clear()
 
     def seat_for_token(self, token: str) -> Optional[int]:
@@ -252,11 +255,20 @@ class HostAuthoritativeMatch:
         events: list[dict[str, Any]] = []
         if self.game.winner is not None:
             return events
-        if now_ms < self.next_ai_action_time_ms:
-            return events
 
         current = self.game.current_player
         if current not in self.ai_seats:
+            self._scheduled_ai_player = None
+            return events
+
+        if self.game.pending_effect is not None and self.game.pending_effect not in (RULE_ZERO_DIRECTION, RULE_SEVEN_TARGET):
+            return events
+
+        if self._scheduled_ai_player != current:
+            self._scheduled_ai_player = current
+            self.next_ai_action_time_ms = max(self.next_ai_action_time_ms, now_ms + HOST_AI_ACTION_DELAY_MS)
+
+        if now_ms < self.next_ai_action_time_ms:
             return events
 
         if self.game.pending_effect == RULE_ZERO_DIRECTION:
@@ -316,7 +328,10 @@ class HostAuthoritativeMatch:
             events.append(self._event_from_action(current, payload, outcome.result))
 
         if events:
-            self.next_ai_action_time_ms = now_ms + 1500
+            self.next_ai_action_time_ms = now_ms + HOST_AI_ACTION_DELAY_MS
+            self._scheduled_ai_player = (
+                self.game.current_player if self.game.current_player in self.ai_seats else None
+            )
         return events
 
     def validate_and_apply(self, player_token: str, payload: dict[str, Any], now_ms: int) -> HostActionResult:
@@ -349,7 +364,7 @@ class HostAuthoritativeMatch:
                     "chosen_color": None,
                 }
             )
-            events.extend(self._auto_resolve_ai_pending(now_ms))
+        events.extend(self._auto_resolve_ai_pending(now_ms))
         return events
 
 

@@ -4,7 +4,7 @@ import unittest
 
 from scripts.cards import ACTION_SKIP, Card
 from scripts.game_manager import GameSettings
-from scripts.multiplayer import HostActionResult, MultiplayerHost
+from scripts.multiplayer import HOST_AI_ACTION_DELAY_MS, HostActionResult, MultiplayerHost
 
 
 class MultiplayerSecurityTest(unittest.TestCase):
@@ -178,11 +178,13 @@ class HostAIPacingTest(unittest.TestCase):
             match.game.player_hands[0] = [Card(color="yellow", kind="number", number=1)]
 
             now_ms = int(time.time() * 1000)
+            match.next_ai_action_time_ms = now_ms
+            match._scheduled_ai_player = 1
             events = match._auto_resolve_ai_pending(now_ms)
 
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0].get("actor_id"), 1)
-            self.assertEqual(match.next_ai_action_time_ms, now_ms + 1500)
+            self.assertEqual(match.next_ai_action_time_ms, now_ms + HOST_AI_ACTION_DELAY_MS)
             self.assertEqual(match.game.current_player, 1)
         finally:
             host.close()
@@ -207,6 +209,59 @@ class HostAIPacingTest(unittest.TestCase):
             events = match._auto_resolve_ai_pending(9_500)
             self.assertEqual(events, [])
             self.assertEqual(match.game.current_player, 1)
+        finally:
+            host.close()
+
+    def test_human_action_schedules_ai_delay_before_ai_moves(self) -> None:
+        host = self.make_host(capacity=2)
+        try:
+            ok, _, _ = host.start_match()
+            self.assertTrue(ok)
+            match = host._state.match
+            self.assertIsNotNone(match)
+            assert match is not None
+
+            now_ms = 10_000
+            match.game.current_player = 0
+            match.next_ai_action_time_ms = 0
+            match.game.pending_effect = None
+            match.game.pending_effect_player = None
+            match.game.pending_draw_decision_card = None
+            match.game.pending_draw_decision_player = None
+            match.game.pending_draw_penalty_count = 0
+            match.game.pending_draw_penalty_kind = None
+            match.game.current_color = "red"
+            match.game.discard_pile = [Card(color="red", kind="number", number=3)]
+            match.game.player_hands[0] = [
+                Card(color="red", kind="number", number=5),
+                Card(color="blue", kind="number", number=8),
+                Card(color="yellow", kind="number", number=1),
+            ]
+            match.game.player_hands[1] = [
+                Card(color="red", kind=ACTION_SKIP),
+                Card(color="green", kind="number", number=5),
+            ]
+
+            result = match.validate_and_apply(
+                host.host_player_token,
+                {"action_type": "play", "card_index": 0},
+                now_ms=now_ms,
+            )
+
+            self.assertTrue(result.ok)
+            self.assertEqual(len(result.events), 1)
+            self.assertEqual(result.events[0].get("actor_id"), 0)
+            self.assertEqual(match.game.current_player, 1)
+            self.assertEqual(match.next_ai_action_time_ms, now_ms + HOST_AI_ACTION_DELAY_MS)
+
+            events = match.advance_and_collect_events(now_ms + HOST_AI_ACTION_DELAY_MS - 1)
+            self.assertEqual(events, [])
+            self.assertEqual(match.game.current_player, 1)
+
+            events = match.advance_and_collect_events(now_ms + HOST_AI_ACTION_DELAY_MS)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].get("actor_id"), 1)
+            self.assertEqual(events[0].get("action"), "play")
         finally:
             host.close()
 
@@ -323,6 +378,54 @@ class HostAIPacingTest(unittest.TestCase):
             self.assertIsInstance(event, dict)
             assert isinstance(event, dict)
             self.assertEqual(event.get("action"), "match_start")
+        finally:
+            host.close()
+
+    def test_current_match_sync_runs_due_ai_turn_without_tick_message(self) -> None:
+        host = self.make_host(capacity=2)
+        try:
+            ok, _, _ = host.start_match()
+            self.assertTrue(ok)
+            match = host._state.match
+            self.assertIsNotNone(match)
+            assert match is not None
+
+            match.game.current_player = 1
+            match.next_ai_action_time_ms = 0
+            match.game.pending_effect = None
+            match.game.pending_effect_player = None
+            match.game.pending_draw_decision_card = None
+            match.game.pending_draw_decision_player = None
+            match.game.pending_draw_penalty_count = 0
+            match.game.pending_draw_penalty_kind = None
+            match.game.current_color = "red"
+            match.game.discard_pile = [Card(color="red", kind="number", number=3)]
+            match.game.player_hands[1] = [
+                Card(color="red", kind=ACTION_SKIP),
+                Card(color="green", kind="number", number=5),
+            ]
+            match.game.player_hands[0] = [Card(color="yellow", kind="number", number=1)]
+
+            sync = host.current_match_sync()
+            self.assertIsNotNone(sync)
+            assert sync is not None
+            self.assertEqual(match.game.current_player, 1)
+
+            sync = host.current_match_sync()
+            self.assertIsNotNone(sync)
+            assert sync is not None
+            self.assertEqual(match.game.current_player, 1)
+
+            match.next_ai_action_time_ms = 0
+            sync = host.current_match_sync()
+            self.assertIsNotNone(sync)
+            assert sync is not None
+
+            event = sync.get("event")
+            self.assertIsInstance(event, dict)
+            assert isinstance(event, dict)
+            self.assertEqual(event.get("actor_id"), 1)
+            self.assertEqual(event.get("action"), "play")
         finally:
             host.close()
 
