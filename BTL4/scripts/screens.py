@@ -12,6 +12,7 @@ from scripts.assets import asset_path
 from scripts.ai import AITurnOutcome, perform_simple_ai_turn
 from scripts.cards import (
     ACTION_COUNTER,
+    ACTION_DRAW_TWO,
     ACTION_DRAW_67,
     ACTION_FLASHBANG,
     ACTION_MOM_MAY_CRY,
@@ -2324,8 +2325,6 @@ class PlayingScreen(BaseScreen):
         screen.blit(text, text.get_rect(center=center))
 
     def _facedown_card_ids(self) -> set[int]:
-        if self.flashbang_delay_remaining_ms > 0:
-            return set()
         if not self.game.is_player_flashbanged(0):
             return set()
         return {id(card) for card in self.game.player_hands[0]}
@@ -3258,10 +3257,11 @@ class PlayingScreen(BaseScreen):
         width = screen.get_width()
         height = screen.get_height()
 
-        # When hand is large, compact it: sort first, then show only 10 visible cards
+        # When hand is large, compact it and show only the most relevant 10 cards.
         compact = len(hand) >= 15
         if compact:
-            sort_hand_cards(hand)
+            if self._should_auto_sort_hand_for_compact():
+                sort_hand_cards(hand)
             visible_indices = self._compact_visible_card_indices()
             visible_count = len(visible_indices)
             virtual_size = visible_count + 1 if visible_count else 1
@@ -3328,6 +3328,9 @@ class PlayingScreen(BaseScreen):
 
         self._hand_layout_initialized = True
 
+    def _should_auto_sort_hand_for_compact(self) -> bool:
+        return True
+
     def _effective_hidden_ids(self) -> set[int]:
         return self.hidden_hand_card_ids | self._compact_hidden_ids
 
@@ -3338,7 +3341,26 @@ class PlayingScreen(BaseScreen):
         if self.game.is_player_flashbanged(0):
             return list(range(min(len(hand), 10)))
         legal_indices = self.game.get_legal_card_indices(0)
-        return legal_indices[:10]
+
+        def compact_priority(index: int) -> tuple[int, int]:
+            card = hand[index]
+            if card.is_none_type:
+                return (0, index)
+            if card.kind in (ACTION_DRAW_TWO, ACTION_WILD_DRAW_FOUR, ACTION_DRAW_67):
+                return (1, index)
+            if card.is_wild:
+                return (2, index)
+            return (3, index)
+
+        prioritized = sorted(legal_indices, key=compact_priority)
+        visible = prioritized[:10]
+        if (
+            self.selected_index in legal_indices
+            and self.selected_index not in visible
+            and len(visible) >= 10
+        ):
+            visible = visible[:9] + [self.selected_index]
+        return visible
 
     def _clamp_selected_index(self) -> None:
         hand = self.game.player_hands[0]
@@ -3457,6 +3479,10 @@ class MultiplayerPlayingScreen(PlayingScreen):
 
     def _local_player_id(self) -> int:
         return 0
+
+    def _should_auto_sort_hand_for_compact(self) -> bool:
+        # Keep client hand order identical to host-authoritative order.
+        return False
 
     def _submit_network_action(self, action_payload: dict[str, Any]) -> ActionResult:
         if self._action_in_flight:

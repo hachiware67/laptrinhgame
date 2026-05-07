@@ -529,6 +529,8 @@ class MultiplayerHost:
         self.host_public_address = self.host_lan_addresses[0] if self.host_lan_addresses else "127.0.0.1"
         self._discovery_targets = _discovery_broadcast_targets(self.host_public_address)
         self._event_seq = 0
+        self._last_match_sync_seq = -1
+        self._last_match_sync_event: Optional[dict[str, Any]] = None
 
         self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
         self._advertise_thread = threading.Thread(target=self._advertise_loop, daemon=True)
@@ -582,6 +584,8 @@ class MultiplayerHost:
         with self._lock:
             if self._state.started:
                 return False, "Match already started.", None
+            self._last_match_sync_seq = -1
+            self._last_match_sync_event = None
             self._state.started = True
             self._state.match = HostAuthoritativeMatch(self._state)
             summary = self._state.match.summary(self._state)
@@ -655,13 +659,14 @@ class MultiplayerHost:
             match = self._state.match
             if match is None:
                 return None
+            sync_seq = self._last_match_sync_seq if self._last_match_sync_seq >= 0 else self._event_seq
             return {
                 "type": "match_sync",
-                "seq": self._event_seq,
+                "seq": sync_seq,
                 "room": self._serialize_room_state(),
                 "game": match.serialize_game_state(),
                 "seat_names": match.display_name_by_seat(),
-                "event": None,
+                "event": self._last_match_sync_event,
             }
 
     def _end_match_if_finished_locked(self) -> Optional[dict[str, Any]]:
@@ -708,15 +713,18 @@ class MultiplayerHost:
         match = self._state.match
         if match is None:
             return
+        seq = self._event_seq
         payload = {
             "type": "match_sync",
-            "seq": self._event_seq,
+            "seq": seq,
             "room": self._serialize_room_state(),
             "game": match.serialize_game_state(),
             "seat_names": match.display_name_by_seat(),
             "event": event,
         }
         self._event_seq += 1
+        self._last_match_sync_seq = seq
+        self._last_match_sync_event = event
         self._broadcast(payload)
 
     def _broadcast(self, payload: dict[str, Any]) -> None:
