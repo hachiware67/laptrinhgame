@@ -1,7 +1,7 @@
 import unittest
 
 from scripts.multiplayer import deserialize_game_state
-from scripts.screens import _card_signature_sort_key
+from scripts.screens import _card_signature_sort_key, _remap_game_payload_to_local_view
 
 
 class MultiplayerVisualSyncTest(unittest.TestCase):
@@ -39,17 +39,43 @@ class MultiplayerVisualSyncTest(unittest.TestCase):
                 "pending_reaction_times": [],
                 "pending_draw_penalty_count": 0,
                 "pending_draw_penalty_kind": None,
+                "pending_draw_penalty_source": None,
                 "pending_draw_decision_player": None,
                 "pending_draw_decision_card": None,
+                "silence_remaining": [[0, 2]],
                 "flashbang_remaining": [[1, 2], [2, 1]],
                 "active_flashbang_player": 1,
                 "uno_called_players": [],
             }
         )
 
+        self.assertEqual(game.silence_remaining, {0: 2})
         self.assertEqual(game.flashbang_remaining, {1: 2, 2: 1})
         self.assertEqual(game.active_flashbang_player, 1)
         self.assertTrue(game.is_player_flashbanged(1))
+
+    def test_remap_game_payload_maps_mixi_player_indexes(self) -> None:
+        remapped = _remap_game_payload_to_local_view(
+            {
+                "settings": {"num_players": 4},
+                "player_hands": [[], [], [], []],
+                "current_player": 1,
+                "winner": None,
+                "pending_effect_player": None,
+                "pending_draw_penalty_source": 3,
+                "pending_draw_decision_player": None,
+                "pending_reaction_players": [],
+                "pending_reaction_times": [],
+                "silence_remaining": [[3, 2], [1, 1]],
+                "flashbang_remaining": [[2, 2]],
+                "active_flashbang_player": 2,
+                "uno_called_players": [],
+            },
+            local_canonical_player_id=2,
+        )
+
+        self.assertEqual(remapped["pending_draw_penalty_source"], 1)
+        self.assertEqual(sorted(remapped["silence_remaining"]), [[1, 2], [3, 1]])
 
 
 if __name__ == "__main__":

@@ -1302,8 +1302,10 @@ def _serialize_game_state(game: UnoGameManager) -> dict[str, Any]:
         "pending_reaction_times": [[int(player), int(ts)] for player, ts in game.pending_reaction_times],
         "pending_draw_penalty_count": game.pending_draw_penalty_count,
         "pending_draw_penalty_kind": game.pending_draw_penalty_kind,
+        "pending_draw_penalty_source": game.pending_draw_penalty_source,
         "pending_draw_decision_player": game.pending_draw_decision_player,
         "pending_draw_decision_card": _serialize_card(game.pending_draw_decision_card),
+        "silence_remaining": [[int(player_id), int(count)] for player_id, count in sorted(game.silence_remaining.items())],
         "flashbang_remaining": [[int(player_id), int(count)] for player_id, count in sorted(game.flashbang_remaining.items())],
         "active_flashbang_player": game.active_flashbang_player,
         "uno_called_players": sorted(game.uno_called_players),
@@ -1343,9 +1345,21 @@ def deserialize_game_state(payload: dict[str, Any]) -> UnoGameManager:
         game.pending_reaction_times.append((int(item[0]), int(item[1])))
     game.pending_draw_penalty_count = int(payload.get("pending_draw_penalty_count", 0))
     game.pending_draw_penalty_kind = payload.get("pending_draw_penalty_kind")
+    pending_source = payload.get("pending_draw_penalty_source")
+    game.pending_draw_penalty_source = int(pending_source) if pending_source is not None else None
     pending_player = payload.get("pending_draw_decision_player")
     game.pending_draw_decision_player = int(pending_player) if pending_player is not None else None
     game.pending_draw_decision_card = _deserialize_card(payload.get("pending_draw_decision_card"))
+    game.silence_remaining = {}
+    silence_payload = payload.get("silence_remaining", [])
+    if isinstance(silence_payload, dict):
+        for player_id, count in silence_payload.items():
+            game.silence_remaining[int(player_id)] = int(count)
+    else:
+        for item in silence_payload:
+            if not isinstance(item, list) or len(item) != 2:
+                continue
+            game.silence_remaining[int(item[0])] = int(item[1])
     game.flashbang_remaining = {}
     for item in payload.get("flashbang_remaining", []):
         if not isinstance(item, list) or len(item) != 2:

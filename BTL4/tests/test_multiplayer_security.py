@@ -3,6 +3,7 @@ import time
 import unittest
 
 from scripts.cards import ACTION_SKIP, Card
+from scripts.game_manager import GameSettings
 from scripts.multiplayer import HostActionResult, MultiplayerHost
 
 
@@ -15,6 +16,31 @@ class MultiplayerSecurityTest(unittest.TestCase):
             capacity=capacity,
             host_address="127.0.0.1",
         )
+
+    def test_host_match_uses_configured_extension_packs(self) -> None:
+        host = MultiplayerHost(
+            host_name="Host",
+            room_name="Mixi Room",
+            password="",
+            capacity=4,
+            host_address="127.0.0.1",
+            settings=GameSettings(extension_packs=["mixi"]),
+        )
+        try:
+            ok, _, _ = host.start_match()
+            self.assertTrue(ok)
+            match = host._state.match
+            self.assertIsNotNone(match)
+            assert match is not None
+            self.assertIn("mixi", match.game.settings.extension_packs)
+            total_cards = (
+                len(match.game.draw_pile)
+                + len(match.game.discard_pile)
+                + sum(len(hand) for hand in match.game.player_hands)
+            )
+            self.assertEqual(total_cards, 236)
+        finally:
+            host.close()
 
     def test_room_state_does_not_expose_player_tokens(self) -> None:
         host = self.make_host()
