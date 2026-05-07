@@ -242,12 +242,10 @@ BTL4/
   - Author: Juan Montoreano
 
 - **UNO card atlas** (`assets/sprites/PC _ Computer - UNO - Cards - Cards (Classic).png`)
-  - Source: **TODO: add original link/author/license**
+  - Source: [The Textures Resource](https://textures.spriters-resource.com/pc_computer/uno/asset/374167/)
 - **Mixi extension card images** (`assets/sprites/counter.png`, `draw67.jpg`, `flashbang.webp`, `mom_may_cry.png`, `silence.jpg`)
-  - Source: **TODO: add original link/author/license for each file**
+  - Source: Courtesy to Do Mixi and Faker
 - **Main menu / in-game BGM** (`assets/bgm/mainmenu.mp3`, `assets/bgm/domixi tay bac.mp3`)
-  - Source: **TODO: add original link/author/license**
+  - Source: [Dân ca Thank Độ](https://www.youtube.com/watch?v=XhxnOCu0j7c)
 - **SFX files** (`assets/sfx/*.mp3`)
-  - Source: **TODO: add original link/author/license for each effect**
-- **Debug atlas overlay** (`assets/sprites/atlas_debug_overlay_snug.png`)
-  - Source: **TODO: clarify generated or external origin**
+  - Source: Courtesy to Do Mixi and Counter-Strike
